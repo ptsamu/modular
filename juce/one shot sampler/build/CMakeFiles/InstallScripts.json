@@ -1,0 +1,11 @@
+{
+	"InstallScripts" : 
+	[
+		"/Users/sseebasstian/Documents/Codex/2026-07-28/i-want-to-make-a-compressor/juce/one shot sampler/build/cmake_install.cmake",
+		"/Users/sseebasstian/Documents/Codex/2026-07-28/i-want-to-make-a-compressor/juce/one shot sampler/build/JUCE/cmake_install.cmake",
+		"/Users/sseebasstian/Documents/Codex/2026-07-28/i-want-to-make-a-compressor/juce/one shot sampler/build/JUCE/modules/cmake_install.cmake",
+		"/Users/sseebasstian/Documents/Codex/2026-07-28/i-want-to-make-a-compressor/juce/one shot sampler/build/JUCE/extras/Build/cmake_install.cmake",
+		"/Users/sseebasstian/Documents/Codex/2026-07-28/i-want-to-make-a-compressor/juce/one shot sampler/build/JUCE/extras/Build/juceaide/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

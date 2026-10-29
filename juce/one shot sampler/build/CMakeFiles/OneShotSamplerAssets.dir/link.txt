@@ -1,0 +1,2 @@
+/usr/bin/ar qc libOneShotSamplerAssets.a CMakeFiles/OneShotSamplerAssets.dir/juce_binarydata_OneShotSamplerAssets/JuceLibraryCode/BinaryData1.cpp.o CMakeFiles/OneShotSamplerAssets.dir/juce_binarydata_OneShotSamplerAssets/JuceLibraryCode/BinaryData2.cpp.o CMakeFiles/OneShotSamplerAssets.dir/juce_binarydata_OneShotSamplerAssets/JuceLibraryCode/BinaryData3.cpp.o
+/usr/bin/ranlib libOneShotSamplerAssets.a

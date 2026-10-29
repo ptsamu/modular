@@ -1,0 +1,3 @@
+/Users/sseebasstian/Documents/Codex/2026-07-28/i-want-to-make-a-compressor/juce/one shot sampler/build/vst3_helpers/OneShotSampler/CMakeFiles/vst3_helper.dir
+/Users/sseebasstian/Documents/Codex/2026-07-28/i-want-to-make-a-compressor/juce/one shot sampler/build/vst3_helpers/OneShotSampler/CMakeFiles/edit_cache.dir
+/Users/sseebasstian/Documents/Codex/2026-07-28/i-want-to-make-a-compressor/juce/one shot sampler/build/vst3_helpers/OneShotSampler/CMakeFiles/rebuild_cache.dir
