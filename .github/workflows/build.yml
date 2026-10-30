@@ -38,6 +38,10 @@ jobs:
           mkdir -p ../../out
           cd ci-build/OneShotSampler_artefacts/Release
           ls -R . | head -50
+          # Ad-hoc sign every bundle so macOS accepts it (free, no Apple account needed).
+          find . -maxdepth 2 \( -name "*.vst3" -o -name "*.component" -o -name "*.app" \) -print0 | while IFS= read -r -d '' b; do
+            codesign --force --deep --sign - "$b" && codesign --verify --verbose=2 "$b"
+          done
           for d in VST3 AU Standalone; do
             [ -d "$d" ] && ditto -c -k --sequesterRsrc --keepParent "$d" "$GITHUB_WORKSPACE/out/Modular-$d.zip"
           done
