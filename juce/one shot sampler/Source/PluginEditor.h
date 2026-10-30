@@ -126,6 +126,7 @@ private:
     static int effectForFilterIndex (int index);
     static int filterIndexForEffect (int effect);
     juce::Rectangle<int> pillBounds() const;
+    juce::Rectangle<int> stepBounds (int index) const;
     juce::Rectangle<int> menuBounds() const;
     juce::Rectangle<int> filterBounds (int index) const;
     juce::Rectangle<int> presetRowBounds (int index) const;
@@ -274,6 +275,7 @@ private:
     juce::Image modularBadge;
     juce::Image darkFrameworksMark;
     juce::Image frameworksHalftoneMark;
+    juce::Image modularWordmark;
     // Static pegboard layers are rasterised once when the fixed Beta 2 board
     // lays out. The live paint path only has to draw motion and controls.
     juce::Image beta2CanvasDotLayer;

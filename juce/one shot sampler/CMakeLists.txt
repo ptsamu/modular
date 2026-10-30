@@ -29,6 +29,7 @@ juce_generate_juce_header(OneShotSampler)
 juce_add_binary_data(OneShotSamplerAssets
     SOURCES
         Source/Assets/modular-top.png
+        Source/Assets/modular-wordmark.png
         Source/Assets/fmw-no-bg-dark-gray.png
         Source/Assets/frameworks-halftone-3000.png
 )
