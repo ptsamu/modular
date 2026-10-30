@@ -16,6 +16,36 @@ OneShotSamplerAudioProcessor::OneShotSamplerAudioProcessor()
     parameters.state.setProperty ("eqBand1Type", 4, nullptr); // low shelf
     parameters.state.setProperty ("eqBand4Type", 0, nullptr); // bell
     parameters.state.setProperty ("eqBand7Type", 5, nullptr); // high shelf
+
+    for (int band = 0; band < 7; ++band)
+    {
+        const auto prefix = "eqBand" + juce::String (band + 1);
+        eqParamPointers[(size_t) band] = { parameters.getRawParameterValue (prefix + "Freq"),
+                                           parameters.getRawParameterValue (prefix + "Gain"),
+                                           parameters.getRawParameterValue (prefix + "Q") };
+    }
+    for (auto& cache : eqCache) cache = { -1.0e9f, -1.0e9f, -1.0e9f, -1.0e9f };
+    refreshEqTypes();
+    parameters.state.addListener (this);
+}
+
+OneShotSamplerAudioProcessor::~OneShotSamplerAudioProcessor()
+{
+    parameters.state.removeListener (this);
+}
+
+void OneShotSamplerAudioProcessor::refreshEqTypes()
+{
+    for (int band = 0; band < 7; ++band)
+        eqBandTypes[(size_t) band].store ((int) parameters.state.getProperty ("eqBand" + juce::String (band + 1) + "Type",
+                                                                           band == 0 ? 4 : band == 6 ? 5 : 0));
+}
+
+void OneShotSamplerAudioProcessor::valueTreePropertyChanged (juce::ValueTree&, const juce::Identifier& property)
+{
+    const auto name = property.toString();
+    if (name.startsWith ("eqBand") && name.endsWith ("Type"))
+        refreshEqTypes();
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout OneShotSamplerAudioProcessor::createParameterLayout()
@@ -144,7 +174,7 @@ void OneShotSamplerAudioProcessor::setFxSlotState (int slot, int effect, bool en
 bool OneShotSamplerAudioProcessor::acceptsMidi() const { return true; }
 bool OneShotSamplerAudioProcessor::producesMidi() const { return false; }
 bool OneShotSamplerAudioProcessor::isMidiEffect() const { return false; }
-double OneShotSamplerAudioProcessor::getTailLengthSeconds() const { return 0.0; }
+double OneShotSamplerAudioProcessor::getTailLengthSeconds() const { return 4.0; }
 int OneShotSamplerAudioProcessor::getNumPrograms() { return 1; }
 int OneShotSamplerAudioProcessor::getCurrentProgram() { return 0; }
 void OneShotSamplerAudioProcessor::setCurrentProgram (int) {}
@@ -180,6 +210,12 @@ void OneShotSamplerAudioProcessor::prepareToPlay (double sampleRate, int samples
     flutterBuffer.setSize (2, modulationBufferLength); flutterBuffer.clear();
     chorusWritePosition = flangerWritePosition = flutterWritePosition = 0;
     chorusPhase = flangerPhase = flutterPhase = 0.0f;
+    flutterWowPhase = flutterDriftPhase = 0.0f;
+    for (auto* smoother : { &delayMixSmooth, &reverbMixSmooth, &chorusMixSmooth, &flangerMixSmooth, &flutterMixSmooth })
+        smoother->reset (sampleRate, 0.03);
+    delayTimeSmooth.reset (sampleRate, 0.25);
+    delayTimeReady = false;
+    for (auto& cache : eqCache) cache = { -1.0e9f, -1.0e9f, -1.0e9f, -1.0e9f };
     flutterRandom = flutterRandomTarget = 0.0f;
     flutterRandomCountdown = 0;
     chorusFeedbackState = {};
@@ -309,6 +345,10 @@ void OneShotSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffe
         if (const auto position = playHead->getPosition())
             if (position->getBpm().hasValue()) bpm = *position->getBpm();
     juce::dsp::AudioBlock<float> block (buffer);
+    // Some hosts exceed the block size they announced. Never write past the
+    // reverb's scratch buffer.
+    if (reverbWetBuffer.getNumSamples() < buffer.getNumSamples())
+        reverbWetBuffer.setSize (2, buffer.getNumSamples(), false, false, true);
     const auto readInterpolated = [] (const juce::AudioBuffer<float>& source, int channel, float position)
     {
         const auto length = source.getNumSamples();
@@ -324,13 +364,18 @@ void OneShotSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffe
     {
         for (int band = 0; band < 7; ++band)
         {
-            const auto prefix = "eqBand" + juce::String (band + 1);
+            const auto b = (size_t) band;
             // Keep coefficient generation stable even in hosts running at low rates.
-            const auto frequency = juce::jlimit (20.0f, (float) currentSampleRate * 0.49f,
-                                                 parameters.getRawParameterValue (prefix + "Freq")->load());
-            const auto q = juce::jlimit (0.2f, 8.0f, parameters.getRawParameterValue (prefix + "Q")->load());
-            const auto gain = juce::Decibels::decibelsToGain (parameters.getRawParameterValue (prefix + "Gain")->load());
-            const int type = (int) parameters.state.getProperty (prefix + "Type", band == 0 ? 4 : band == 6 ? 5 : 0);
+            const auto frequency = juce::jlimit (20.0f, (float) currentSampleRate * 0.49f, eqParamPointers[b][0]->load());
+            const auto gainDb = eqParamPointers[b][1]->load();
+            const auto q = juce::jlimit (0.2f, 8.0f, eqParamPointers[b][2]->load());
+            const auto type = eqBandTypes[b].load();
+            auto& cache = eqCache[b];
+            // Rebuild only on a real change: no allocation in the common case.
+            if (cache[0] == frequency && cache[1] == gainDb && cache[2] == q && cache[3] == (float) type)
+                continue;
+            cache = { frequency, gainDb, q, (float) type };
+            const auto gain = juce::Decibels::decibelsToGain (gainDb);
             juce::dsp::IIR::Coefficients<float>::Ptr coefficients;
             switch (type) {
                 case 1: coefficients = juce::dsp::IIR::Coefficients<float>::makeLowPass (currentSampleRate, frequency, q); break;
@@ -340,8 +385,8 @@ void OneShotSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffe
                 case 5: coefficients = juce::dsp::IIR::Coefficients<float>::makeHighShelf (currentSampleRate, frequency, q, gain); break;
                 default: coefficients = juce::dsp::IIR::Coefficients<float>::makePeakFilter (currentSampleRate, frequency, q, gain); break;
             }
-            for (int channel = 0; channel < buffer.getNumChannels(); ++channel)
-                eqBands[(size_t) band][(size_t) channel].coefficients = coefficients;
+            for (size_t channel = 0; channel < 2; ++channel)
+                eqBands[b][channel].coefficients = coefficients;
         }
         for (int channel = 0; channel < buffer.getNumChannels(); ++channel)
             for (int sampleIndex = 0; sampleIndex < buffer.getNumSamples(); ++sampleIndex)
@@ -353,17 +398,22 @@ void OneShotSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffe
     };
     const auto applyDelay = [this, &buffer, bpm, &readInterpolated]
     {
-        const auto delaySamples = juce::jlimit (8, delayBuffer.getNumSamples() - 2, static_cast<int> (currentSampleRate * 60.0 / bpm * parameters.getRawParameterValue ("delayTime")->load()));
+        const auto targetDelay = (float) juce::jlimit (8, delayBuffer.getNumSamples() - 2, static_cast<int> (currentSampleRate * 60.0 / bpm * parameters.getRawParameterValue ("delayTime")->load()));
+        // Time changes glide like a tape delay instead of jumping (no clicks).
+        if (! delayTimeReady) { delayTimeSmooth.setCurrentAndTargetValue (targetDelay); delayTimeReady = true; }
+        else delayTimeSmooth.setTargetValue (targetDelay);
         const auto feedback = juce::jlimit (0.0f, 0.86f, parameters.getRawParameterValue ("delayFeedback")->load());
-        const auto mix = parameters.getRawParameterValue ("delayMix")->load();
+        delayMixSmooth.setTargetValue (parameters.getRawParameterValue ("delayMix")->load());
         const auto toneCoefficient = 0.07f + (1.0f - feedback) * 0.16f;
         for (int frame = 0; frame < buffer.getNumSamples(); ++frame)
         {
             const auto left = buffer.getSample (0, frame);
             const auto right = buffer.getNumChannels() > 1 ? buffer.getSample (1, frame) : left;
-            const auto halfHead = (float) delaySamples * 0.5f;
-            const auto mainHead = (float) delaySamples;
-            const auto longHead = juce::jmin ((float) delayBuffer.getNumSamples() - 2.0f, (float) delaySamples * 1.5f);
+            const auto mix = delayMixSmooth.getNextValue();
+            const auto delaySamplesNow = delayTimeSmooth.getNextValue();
+            const auto halfHead = delaySamplesNow * 0.5f;
+            const auto mainHead = delaySamplesNow;
+            const auto longHead = juce::jmin ((float) delayBuffer.getNumSamples() - 2.0f, delaySamplesNow * 1.5f);
             const auto wetLeft = 0.25f * readInterpolated (delayBuffer, 1, (float) delayWritePosition - halfHead)
                                + 0.55f * readInterpolated (delayBuffer, 0, (float) delayWritePosition - mainHead)
                                + 0.20f * readInterpolated (delayBuffer, 1, (float) delayWritePosition - longHead);
@@ -420,15 +470,19 @@ void OneShotSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffe
         juce::dsp::AudioBlock<float> wetBlock (reverbWetBuffer);
         auto wetView = wetBlock.getSubBlock (0, (size_t) buffer.getNumSamples());
         reverb.process (juce::dsp::ProcessContextReplacing<float> (wetView));
-        const auto dryGain = 1.0f - mix * 0.18f;
-        const auto wetGain = mix * 0.72f;
+        reverbMixSmooth.setTargetValue (mix);
         for (int frame = 0; frame < buffer.getNumSamples(); ++frame)
+        {
+            const auto smoothedMix = reverbMixSmooth.getNextValue();
+            const auto dryGain = 1.0f - smoothedMix * 0.18f;
+            const auto wetGain = smoothedMix * 0.72f;
             for (int channel = 0; channel < buffer.getNumChannels(); ++channel)
             {
                 const auto dry = buffer.getSample (channel, frame);
                 const auto wet = std::tanh (reverbWetBuffer.getSample (channel, frame) * 1.05f) * 0.78f;
                 buffer.setSample (channel, frame, dry * dryGain + wet * wetGain);
             }
+        }
     };
     const auto applyChorus = [this, &buffer, &readInterpolated]
     {
@@ -436,12 +490,14 @@ void OneShotSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffe
         const auto depth = parameters.getRawParameterValue ("chorusDepth")->load();
         const auto baseDelay = parameters.getRawParameterValue ("chorusDelay")->load() * 0.001f * (float) currentSampleRate;
         const auto feedback = parameters.getRawParameterValue ("chorusFeedback")->load();
-        const auto mix = parameters.getRawParameterValue ("chorusMix")->load();
-        const auto depthSamples = 6.0f + depth * (float) currentSampleRate * 0.010f;
+        chorusMixSmooth.setTargetValue (parameters.getRawParameterValue ("chorusMix")->load());
+        // Never let the sweep reach below ~2 samples of delay (that read the oldest audio in the buffer).
+        const auto depthSamples = juce::jmin (6.0f + depth * (float) currentSampleRate * 0.010f, juce::jmax (0.0f, baseDelay - 2.0f));
         for (int frame = 0; frame < buffer.getNumSamples(); ++frame)
         {
             const auto left = buffer.getSample (0, frame);
             const auto right = buffer.getNumChannels() > 1 ? buffer.getSample (1, frame) : left;
+            const auto mix = chorusMixSmooth.getNextValue();
             const auto phaseLeft = chorusPhase;
             const auto phaseRight = chorusPhase + 0.87f;
             const auto leftVoiceA = readInterpolated (chorusBuffer, 0, (float) chorusWritePosition - baseDelay - depthSamples * std::sin (phaseLeft));
@@ -466,12 +522,13 @@ void OneShotSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffe
         const auto depth = parameters.getRawParameterValue ("flangerDepth")->load();
         const auto baseDelay = parameters.getRawParameterValue ("flangerDelay")->load() * 0.001f * (float) currentSampleRate;
         const auto feedback = parameters.getRawParameterValue ("flangerFeedback")->load();
-        const auto mix = parameters.getRawParameterValue ("flangerMix")->load();
+        flangerMixSmooth.setTargetValue (parameters.getRawParameterValue ("flangerMix")->load());
         const auto sweepSamples = 2.0f + depth * (float) currentSampleRate * 0.008f;
         for (int frame = 0; frame < buffer.getNumSamples(); ++frame)
         {
             const auto left = buffer.getSample (0, frame);
             const auto right = buffer.getNumChannels() > 1 ? buffer.getSample (1, frame) : left;
+            const auto mix = flangerMixSmooth.getNextValue();
             const auto leftDelay = baseDelay + sweepSamples * (0.5f + 0.5f * std::sin (flangerPhase));
             const auto rightDelay = baseDelay + sweepSamples * (0.5f + 0.5f * std::sin (flangerPhase + 0.45f));
             const auto wetLeft = readInterpolated (flangerBuffer, 0, (float) flangerWritePosition - leftDelay);
@@ -491,7 +548,7 @@ void OneShotSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffe
         const auto rate = parameters.getRawParameterValue ("flutterRate")->load();
         const auto depth = parameters.getRawParameterValue ("flutterDepth")->load();
         const auto baseDelay = parameters.getRawParameterValue ("flutterDelay")->load() * 0.001f * (float) currentSampleRate;
-        const auto mix = parameters.getRawParameterValue ("flutterMix")->load();
+        flutterMixSmooth.setTargetValue (parameters.getRawParameterValue ("flutterMix")->load());
         const auto wowRate = 0.12f + rate * 0.10f;
         const auto flutterSamples = depth * (float) currentSampleRate * 0.0042f;
         for (int frame = 0; frame < buffer.getNumSamples(); ++frame)
@@ -502,8 +559,11 @@ void OneShotSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffe
                 flutterRandomTarget = textureRandom.nextFloat() * 2.0f - 1.0f;
             }
             flutterRandom += (flutterRandomTarget - flutterRandom) * 0.0025f;
-            const auto modulation = 0.62f * std::sin (flutterPhase * wowRate / juce::jmax (0.01f, rate))
-                                  + 0.23f * std::sin (flutterPhase * 1.91f) + 0.15f * flutterRandom;
+            // Each component has its own continuous phase. (They used to be derived
+            // from a phase that wrapped every cycle, which made the delay jump.)
+            const auto modulation = 0.62f * std::sin (flutterWowPhase)
+                                  + 0.23f * std::sin (flutterDriftPhase) + 0.15f * flutterRandom;
+            const auto mix = flutterMixSmooth.getNextValue();
             const auto delay = juce::jmax (1.0f, baseDelay + flutterSamples * modulation);
             const auto left = buffer.getSample (0, frame);
             const auto right = buffer.getNumChannels() > 1 ? buffer.getSample (1, frame) : left;
@@ -515,6 +575,8 @@ void OneShotSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffe
             if (buffer.getNumChannels() > 1) buffer.setSample (1, frame, right * (1.0f - mix) + wetRight * mix);
             flutterWritePosition = (flutterWritePosition + 1) % flutterBuffer.getNumSamples();
             flutterPhase = std::fmod (flutterPhase + juce::MathConstants<float>::twoPi * rate / (float) currentSampleRate, juce::MathConstants<float>::twoPi);
+            flutterWowPhase = std::fmod (flutterWowPhase + juce::MathConstants<float>::twoPi * wowRate / (float) currentSampleRate, juce::MathConstants<float>::twoPi);
+            flutterDriftPhase = std::fmod (flutterDriftPhase + juce::MathConstants<float>::twoPi * rate * 1.91f / (float) currentSampleRate, juce::MathConstants<float>::twoPi);
         }
     };
     const auto wrapTexturePosition = [this] (float position) { const auto length = (float) textureBuffer.getNumSamples(); while (position < 0.0f) position += length; while (position >= length) position -= length; return position; };
@@ -579,8 +641,8 @@ void OneShotSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffe
             if (orbitBlend > 0.00001f)
             {
                 const auto orbit = std::sin (textureOrbitPhase);
-                const auto leftPosition = (float) writePosition - currentSampleRate * (0.11f + orbitWidth * orbit);
-                const auto rightPosition = (float) writePosition - currentSampleRate * (0.11f - orbitWidth * orbit);
+                const auto leftPosition = (float) writePosition - currentSampleRate * (0.17f + orbitWidth * orbit);
+                const auto rightPosition = (float) writePosition - currentSampleRate * (0.17f - orbitWidth * orbit);
                 const auto orbitLeft = readTexture (0, leftPosition);
                 const auto orbitRight = readTexture (buffer.getNumChannels() > 1 ? 1 : 0, rightPosition);
                 output[0] += (orbitLeft - output[0]) * orbitBlend;
@@ -745,6 +807,7 @@ void OneShotSamplerAudioProcessor::setStateInformation (const void* data, int si
                     setFxSlotState (slot, slot, false);
             }
             parameters.state.setProperty ("fxLayoutVersion", 6, nullptr);
+            refreshEqTypes();
             const auto savedSamplePath = parameters.state.getProperty ("sampleFilePath", {}).toString();
             const juce::File savedSample (savedSamplePath);
             if (savedSample.existsAsFile())

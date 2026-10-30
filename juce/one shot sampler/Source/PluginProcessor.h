@@ -2,11 +2,12 @@
 
 #include <JuceHeader.h>
 
-class OneShotSamplerAudioProcessor final : public juce::AudioProcessor
+class OneShotSamplerAudioProcessor final : public juce::AudioProcessor,
+                                           private juce::ValueTree::Listener
 {
 public:
     OneShotSamplerAudioProcessor();
-    ~OneShotSamplerAudioProcessor() override = default;
+    ~OneShotSamplerAudioProcessor() override;
 
     void prepareToPlay (double sampleRate, int samplesPerBlock) override;
     void releaseResources() override;
@@ -49,6 +50,8 @@ public:
 
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
+    void valueTreePropertyChanged (juce::ValueTree&, const juce::Identifier&) override;
+    void refreshEqTypes();
 
     struct SampleData
     {
@@ -95,6 +98,15 @@ private:
     juce::Random textureRandom;
     juce::SmoothedValue<float> granularWet, harmonyWet, randomWet;
     std::array<std::array<juce::dsp::IIR::Filter<float>, 2>, 7> eqBands;
+    // EQ band types live in the value tree (message thread). The audio thread
+    // only ever reads these atomic mirrors, and coefficients are rebuilt only
+    // when a value actually changes.
+    std::array<std::atomic<int>, 7> eqBandTypes {};
+    std::array<std::array<std::atomic<float>*, 3>, 7> eqParamPointers {};
+    std::array<std::array<float, 4>, 7> eqCache {};
+    juce::SmoothedValue<float> delayMixSmooth, reverbMixSmooth, chorusMixSmooth, flangerMixSmooth, flutterMixSmooth, delayTimeSmooth;
+    bool delayTimeReady = false;
+    float flutterWowPhase = 0.0f, flutterDriftPhase = 0.0f;
     std::atomic<float> outputLevel { 0.0f };
     std::atomic<float> envelopeLevel { 0.0f };
     std::atomic<float> playbackProgress { 0.0f };
