@@ -1601,7 +1601,7 @@ void OneShotSamplerAudioProcessorEditor::paint (juce::Graphics& g)
 
     // Header: the official wordmark on the left, two pills for the live state.
     // The preset pill and its circles are drawn by the PresetSelector itself.
-    g.setImageResampling (juce::Graphics::highResamplingQuality);
+    g.setImageResamplingQuality (juce::Graphics::highResamplingQuality);
     if (modularWordmark.isValid())
     {
         g.drawImage (modularWordmark, juce::Rectangle<float> ((float) header.getX() + 2.0f, (float) header.getY() + 13.0f, 180.0f, 30.0f),

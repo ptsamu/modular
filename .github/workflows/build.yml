@@ -19,7 +19,10 @@ jobs:
 
       - name: Build
         working-directory: juce/one shot sampler
-        run: cmake --build ci-build --config Release --parallel 4 2>&1 | tee build.log
+        shell: bash
+        run: |
+          set -o pipefail
+          cmake --build ci-build --config Release --parallel 4 2>&1 | grep -v 'deprecated\|note:\|\[\[deprecated\|\^\|^ *[0-9]* |\|^ *|' | tee build.log
 
       - name: Package
         working-directory: juce/one shot sampler
