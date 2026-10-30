@@ -39,8 +39,17 @@ target_compile_definitions(OneShotSampler
         JUCE_WEB_BROWSER=0
         JUCE_USE_CURL=0
         JUCE_VST3_CAN_REPLACE_VST2=0
-        kAudioAggregateDriftCompensationHighQuality=kAudioSubDeviceDriftCompensationHighQuality
 )
+
+# Local-build workaround for an older JUCE vs newer macOS SDK. The GitHub build
+# uses a current JUCE and passes -DMODULAR_SKIP_DRIFT_FIX=ON, because with a
+# current JUCE this define makes the SDK symbol get defined twice.
+if(NOT MODULAR_SKIP_DRIFT_FIX)
+    target_compile_definitions(OneShotSampler
+        PUBLIC
+            kAudioAggregateDriftCompensationHighQuality=kAudioSubDeviceDriftCompensationHighQuality
+    )
+endif()
 
 target_link_libraries(OneShotSampler
     PRIVATE
