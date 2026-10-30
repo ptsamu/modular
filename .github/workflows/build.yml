@@ -10,7 +10,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Select Xcode 16 (JUCE 8.0.6 does not build with the Xcode 26 SDK)
+      - name: Select Xcode 16 (keep a stable toolchain)
         run: |
           ls /Applications | grep -i xcode || true
           for v in 16.4 16.3 16.2 16.1 16.0; do
@@ -19,7 +19,7 @@ jobs:
           xcodebuild -version
 
       - name: Get JUCE
-        run: git clone --depth 1 --branch 8.0.6 https://github.com/juce-framework/JUCE.git "juce/one shot sampler/JUCE"
+        run: git clone --depth 1 --branch 8.0.15 https://github.com/juce-framework/JUCE.git "juce/one shot sampler/JUCE"
 
       - name: Configure
         working-directory: juce/one shot sampler
