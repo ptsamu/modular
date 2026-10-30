@@ -6,9 +6,17 @@ on:
 
 jobs:
   build:
-    runs-on: macos-latest
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+
+      - name: Select Xcode 16 (JUCE 8.0.6 does not build with the Xcode 26 SDK)
+        run: |
+          ls /Applications | grep -i xcode || true
+          for v in 16.4 16.3 16.2 16.1 16.0; do
+            if [ -d "/Applications/Xcode_$v.app" ]; then sudo xcode-select -s "/Applications/Xcode_$v.app"; break; fi
+          done
+          xcodebuild -version
 
       - name: Get JUCE
         run: git clone --depth 1 --branch 8.0.6 https://github.com/juce-framework/JUCE.git "juce/one shot sampler/JUCE"
