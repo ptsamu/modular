@@ -1030,7 +1030,7 @@ PerformancePad::PerformancePad()
     for (auto& point : trail)
         point = { positionX, positionY };
     trailInitialised = true;
-    startTimerHz (60);
+    startTimerHz (30);
 }
 
 void PerformancePad::pushTrailPoint()
@@ -1545,8 +1545,8 @@ OneShotSamplerAudioProcessorEditor::OneShotSamplerAudioProcessorEditor (OneShotS
     setSize (1640, 720);
     setResizable (false, false);
     polishKnobs();
-    // The board now runs a lightweight, cached 60 fps visual clock.
-    startTimerHz (60);
+    // 30 fps is plenty for these slow visuals and keeps the host UI responsive.
+    startTimerHz (30);
 }
 
 OneShotSamplerAudioProcessorEditor::~OneShotSamplerAudioProcessorEditor()
@@ -1617,7 +1617,7 @@ namespace
         const auto sourceX = width * 0.34f, sourceY = height * 0.5f;
         const auto maxRadius = width * 1.15f;
         constexpr float period = 3.4f;
-        constexpr int ringsPerSource = 3;
+        constexpr int ringsPerSource = 2;
         const auto energy = 0.55f + 0.45f * level;
         for (int nx = -1; nx <= 1; ++nx)
             for (int ny = -1; ny <= 1; ++ny)
@@ -1625,13 +1625,15 @@ namespace
                 const auto imageX = (float) nx * width + ((nx & 1) != 0 ? width - sourceX : sourceX);
                 const auto imageY = (float) ny * height + ((ny & 1) != 0 ? height - sourceY : sourceY);
                 const auto order = (float) (std::abs (nx) + std::abs (ny));
+                if (order > 1.0f)
+                    continue; // corner reflections are too faint to be worth drawing
                 const auto strength = std::pow (0.55f, order) * energy;
                 for (int ring = 0; ring < ringsPerSource; ++ring)
                 {
                     const auto phase = std::fmod (timeSeconds / period + (float) ring / (float) ringsPerSource, 1.0f);
                     const auto radius = phase * maxRadius;
                     const auto alpha = std::pow (1.0f - phase, 1.5f) * strength;
-                    if (alpha < 0.02f)
+                    if (alpha < 0.05f)
                         continue;
                     g.setColour (ink.withAlpha (juce::jmin (1.0f, alpha)));
                     g.drawEllipse (room.getX() + imageX - radius, room.getY() + imageY - radius, radius * 2.0f, radius * 2.0f, 1.0f);
@@ -2024,14 +2026,12 @@ void OneShotSamplerAudioProcessorEditor::paint (juce::Graphics& g)
     }
     else
     {
-        drawGrid (moduleVisual.reduced (12), ink.withAlpha (0.22f), 25);
+        if (selectedFx != 5)
+            drawGrid (moduleVisual.reduced (12), ink.withAlpha (0.22f), 25);
         g.setColour (ink);
         if (selectedFx == 5)
         {
-            juce::Path eq; eq.startNewSubPath ((float) moduleVisual.getX() + 8, visualCentre.y);
-            for (int x = moduleVisual.getX() + 8; x < moduleVisual.getRight() - 8; x += 4)
-                eq.lineTo ((float) x, visualCentre.y - std::sin ((float) x * .07f + motion * 0.75f) * 17.0f);
-            g.strokePath (eq, juce::PathStrokeType (1.0f));
+            // The interactive EQ pad owns this whole rectangle.
         }
         else if (selectedFx == 1)
         {
@@ -2278,7 +2278,7 @@ void OneShotSamplerAudioProcessorEditor::resized()
     if (selectedFx == 5)
     {
         eqCurvePad.setVisible (true); showHeaderPreset (5, eqPreset);
-        eqCurvePad.setBounds (moduleControls.reduced (2).withTrimmedTop (5));
+        eqCurvePad.setBounds (beta2ModuleBounds.getX() + 20, beta2ModuleBounds.getY() + 84, beta2ModuleBounds.getWidth() - 40, beta2ModuleBounds.getHeight() - 104);
     }
     else if (selectedFx == 7)
     {
@@ -2589,7 +2589,7 @@ void OneShotSamplerAudioProcessorEditor::timerCallback()
     // wrapping this value avoids the single-frame discontinuity a modulo reset
     // can introduce in complex visuals.
     // Preserve the same visual speed after moving from 30 to 60 fps.
-    fxVisualPhase += 0.00225f;
+    fxVisualPhase += 0.0045f;
     const auto meterTarget = juce::jlimit (0.0f, 1.0f, audioProcessor.getOutputLevel());
     // Fast attack, slow release: visual meters breathe with the audio rather
     // than flickering between host audio blocks.
@@ -2664,17 +2664,17 @@ void OneShotSamplerAudioProcessorEditor::updateScopeAndMeters()
             keyGlow[(size_t) (((shownNote - 60) % 24 + 24) % 24)] = 1.0f;
     }
     for (auto& glow : keyGlow)
-        glow = juce::jmax (0.0f, glow - 0.018f);
+        glow = juce::jmax (0.0f, glow - 0.036f);
 
     // Meters: fast attack, slower fall, with a short peak hold. -48..0 dB.
     const std::array<float, 2> peaks { audioProcessor.getPeakLeft(), audioProcessor.getPeakRight() };
     for (size_t channel = 0; channel < 2; ++channel)
     {
         const auto level = juce::jlimit (0.0f, 1.0f, (juce::Decibels::gainToDecibels (peaks[channel], -48.0f) + 48.0f) / 48.0f);
-        meterLevel[channel] += (level - meterLevel[channel]) * (level > meterLevel[channel] ? 0.65f : 0.09f);
-        if (meterLevel[channel] >= meterPeakHold[channel]) { meterPeakHold[channel] = meterLevel[channel]; meterHoldFrames[channel] = 40; }
+        meterLevel[channel] += (level - meterLevel[channel]) * (level > meterLevel[channel] ? 0.75f : 0.16f);
+        if (meterLevel[channel] >= meterPeakHold[channel]) { meterPeakHold[channel] = meterLevel[channel]; meterHoldFrames[channel] = 20; }
         else if (meterHoldFrames[channel] > 0) --meterHoldFrames[channel];
-        else meterPeakHold[channel] = juce::jmax (meterLevel[channel], meterPeakHold[channel] - 0.012f);
+        else meterPeakHold[channel] = juce::jmax (meterLevel[channel], meterPeakHold[channel] - 0.024f);
     }
 
     // Scope: find the last rising zero crossing so the picture holds still.
