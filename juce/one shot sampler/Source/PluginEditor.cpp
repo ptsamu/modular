@@ -7,8 +7,8 @@ namespace
     // Every knob caption in the plugin uses this one font.
     juce::Font knobCaptionFont()
     {
-        juce::Font font ("Helvetica", 10.0f, juce::Font::bold);
-        font.setExtraKerningFactor (0.08f);
+        juce::Font font ("Helvetica", 9.0f, juce::Font::bold);
+        font.setExtraKerningFactor (0.04f);
         return font;
     }
 
@@ -344,8 +344,8 @@ void FrameworksLookAndFeel::drawLabel (juce::Graphics& g, juce::Label& label)
         // ADSR and master controls consistent with the new engine cards.
         g.setColour (label.findColour (juce::Label::textColourId));
         // One readout size for every knob, so no value looks bigger than another.
-        g.setFont (juce::Font ("Helvetica", 12.0f, juce::Font::plain));
-        g.drawFittedText (label.getText(), label.getLocalBounds().reduced (5, 0), juce::Justification::centred, 1);
+        g.setFont (juce::Font ("Helvetica", 11.0f, juce::Font::plain));
+        g.drawFittedText (label.getText(), label.getLocalBounds(), juce::Justification::centred, 1, 0.7f);
         return;
     }
 
@@ -1546,7 +1546,7 @@ OneShotSamplerAudioProcessorEditor::OneShotSamplerAudioProcessorEditor (OneShotS
     setResizable (false, false);
     polishKnobs();
     // 30 fps is plenty for these slow visuals and keeps the host UI responsive.
-    startTimerHz (30);
+    startTimerHz (24);
 }
 
 OneShotSamplerAudioProcessorEditor::~OneShotSamplerAudioProcessorEditor()
@@ -1608,42 +1608,22 @@ namespace
     // image sources) and fade, so the picture shows what a reverb actually does.
     void drawSpaceRoom (juce::Graphics& g, juce::Rectangle<float> room, float timeSeconds, float level, juce::Colour ink)
     {
+        // Deliberately cheap: a room outline and three rings that grow from
+        // the source and fade. Nothing is clipped or mirrored.
         g.setColour (ink.withAlpha (0.55f));
         g.drawRoundedRectangle (room, 3.0f, 1.0f);
-
-        g.saveState();
-        g.reduceClipRegion (room.toNearestInt());
-        const auto width = room.getWidth(), height = room.getHeight();
-        const auto sourceX = width * 0.34f, sourceY = height * 0.5f;
-        const auto maxRadius = width * 1.15f;
-        constexpr float period = 3.4f;
-        constexpr int ringsPerSource = 2;
-        const auto energy = 0.55f + 0.45f * level;
-        for (int nx = -1; nx <= 1; ++nx)
-            for (int ny = -1; ny <= 1; ++ny)
-            {
-                const auto imageX = (float) nx * width + ((nx & 1) != 0 ? width - sourceX : sourceX);
-                const auto imageY = (float) ny * height + ((ny & 1) != 0 ? height - sourceY : sourceY);
-                const auto order = (float) (std::abs (nx) + std::abs (ny));
-                if (order > 1.0f)
-                    continue; // corner reflections are too faint to be worth drawing
-                const auto strength = std::pow (0.55f, order) * energy;
-                for (int ring = 0; ring < ringsPerSource; ++ring)
-                {
-                    const auto phase = std::fmod (timeSeconds / period + (float) ring / (float) ringsPerSource, 1.0f);
-                    const auto radius = phase * maxRadius;
-                    const auto alpha = std::pow (1.0f - phase, 1.5f) * strength;
-                    if (alpha < 0.05f)
-                        continue;
-                    g.setColour (ink.withAlpha (juce::jmin (1.0f, alpha)));
-                    g.drawEllipse (room.getX() + imageX - radius, room.getY() + imageY - radius, radius * 2.0f, radius * 2.0f, 1.0f);
-                }
-            }
-        g.restoreState();
-
-        const auto pulse = 3.0f + 1.5f * std::sin (timeSeconds * 5.0f) * energy;
+        const auto sourceX = room.getX() + room.getWidth() * 0.5f, sourceY = room.getCentreY();
+        const auto maxRadius = room.getHeight() * 0.46f;
+        constexpr float period = 3.0f;
+        for (int ring = 0; ring < 3; ++ring)
+        {
+            const auto phase = std::fmod (timeSeconds / period + (float) ring / 3.0f, 1.0f);
+            const auto radius = 3.0f + phase * maxRadius;
+            g.setColour (ink.withAlpha ((1.0f - phase) * (0.55f + 0.45f * level)));
+            g.drawEllipse (sourceX - radius, sourceY - radius, radius * 2.0f, radius * 2.0f, 1.0f);
+        }
         g.setColour (ink);
-        g.fillEllipse (room.getX() + sourceX - pulse, room.getY() + sourceY - pulse, pulse * 2.0f, pulse * 2.0f);
+        g.fillEllipse (sourceX - 2.5f, sourceY - 2.5f, 5.0f, 5.0f);
     }
 }
 
@@ -1705,7 +1685,10 @@ void OneShotSamplerAudioProcessorEditor::paint (juce::Graphics& g)
     g.fillEllipse (flowPill.getX() + 18.0f, flowPill.getCentreY() - 3.0f, 6.0f, 6.0f);
     g.setFont (font (10.0f));
     g.drawText ("Signal flow", flowPill.withTrimmedLeft (32.0f), juce::Justification::centredLeft);
-    g.drawText ("01 / C3", timePill, juce::Justification::centred);
+    {
+        static const char* pillNames[12] = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+        g.drawText ("01 / " + (shownNote >= 0 ? juce::String (pillNames[shownNote % 12]) + juce::String (shownNote / 12 - 2) : juce::String ("C3")), timePill, juce::Justification::centred);
+    }
 
     // Five engines, five outlined cards. Each module stays legible at rest and
     // becomes a proper, animated editor when it is selected.
@@ -1900,47 +1883,32 @@ void OneShotSamplerAudioProcessorEditor::paint (juce::Graphics& g)
     triggerMark.addTriangle (waveArea.getX(), waveArea.getCentreY() - 5.0f, waveArea.getX() + 6.0f, waveArea.getCentreY(), waveArea.getX(), waveArea.getCentreY() + 5.0f);
     g.setColour (ink.withAlpha (0.7f)); g.fillPath (triggerMark);
 
-    // Stereo meters: 18 segments, peak-hold tick.
-    constexpr int meterSegments = 18;
-    const auto segmentHeight = (waveArea.getHeight() - (float) (meterSegments - 1)) / (float) meterSegments;
+    // Stereo meters: two slim, continuous bars with a fine peak tick.
     for (int channel = 0; channel < 2; ++channel)
     {
-        const auto columnX = (float) meterX + (float) channel * 16.0f;
-        const auto lit = (int) std::ceil (meterLevel[(size_t) channel] * (float) meterSegments - 0.001f);
-        const auto holdSegment = juce::jlimit (0, meterSegments - 1, (int) std::ceil (meterPeakHold[(size_t) channel] * (float) meterSegments) - 1);
-        for (int segment = 0; segment < meterSegments; ++segment)
-        {
-            const auto y = waveArea.getBottom() - (float) (segment + 1) * segmentHeight - (float) segment;
-            const auto cell = juce::Rectangle<float> (columnX, y, 13.0f, segmentHeight);
-            const auto isHold = meterPeakHold[(size_t) channel] > 0.01f && segment == holdSegment;
-            g.setColour (ink.withAlpha (segment < lit || isHold ? 1.0f : 0.18f));
-            g.fillRect (cell);
-        }
+        const auto columnX = (float) meterX + 4.0f + (float) channel * 14.0f;
+        const auto track = juce::Rectangle<float> (columnX, waveArea.getY(), 4.0f, waveArea.getHeight());
+        g.setColour (ink.withAlpha (0.18f));
+        g.fillRoundedRectangle (track, 2.0f);
+        const auto level = juce::jlimit (0.0f, 1.0f, meterLevel[(size_t) channel]);
+        const auto fillHeight = juce::jmax (0.0f, track.getHeight() * level);
+        g.setColour (ink);
+        g.fillRoundedRectangle (track.withTop (track.getBottom() - fillHeight), 2.0f);
+        const auto hold = juce::jlimit (0.0f, 1.0f, meterPeakHold[(size_t) channel]);
+        if (hold > 0.02f)
+            g.fillRect (columnX - 2.0f, track.getBottom() - track.getHeight() * hold - 0.5f, 8.0f, 1.0f);
     }
 
-    // Key strip: two octaves from C3 (MIDI 60). The playing note glows.
-    constexpr int whiteKeyCount = 14;
-    const auto whiteKeyWidth = keyArea.getWidth() / (float) whiteKeyCount;
-    const int whiteSemitone[7] = { 0, 2, 4, 5, 7, 9, 11 };
-    for (int key = 0; key < whiteKeyCount; ++key)
+    // Note strip: 24 fine ticks (two octaves from C3). The note being played
+    // rises as a taller, brighter tick and fades away.
+    const auto tickSpacing = keyArea.getWidth() / 24.0f;
+    for (int tickIndex = 0; tickIndex < 24; ++tickIndex)
     {
-        const auto cell = juce::Rectangle<float> (keyArea.getX() + (float) key * whiteKeyWidth, keyArea.getY(), whiteKeyWidth, keyArea.getHeight());
-        const auto semitone = (key / 7) * 12 + whiteSemitone[key % 7];
-        g.setColour (ink.withAlpha (juce::jlimit (0.0f, 1.0f, keyGlow[(size_t) semitone])));
-        g.fillRect (cell);
-        g.setColour (ink.withAlpha (0.55f));
-        g.drawRect (cell, 0.6f);
-    }
-    for (int key = 0; key < whiteKeyCount - 1; ++key)
-    {
-        const auto position = key % 7;
-        if (position == 2 || position == 6)
-            continue;
-        const auto semitone = (key / 7) * 12 + whiteSemitone[position] + 1;
-        const auto cell = juce::Rectangle<float> (keyArea.getX() + (float) (key + 1) * whiteKeyWidth - 3.5f, keyArea.getY(), 7.0f, 7.0f);
-        g.setColour (blue); g.fillRect (cell);
-        g.setColour (ink.withAlpha (juce::jlimit (0.0f, 1.0f, keyGlow[(size_t) semitone]))); g.fillRect (cell);
-        g.setColour (ink.withAlpha (0.75f)); g.drawRect (cell, 0.6f);
+        const auto glow = juce::jlimit (0.0f, 1.0f, keyGlow[(size_t) tickIndex]);
+        const auto x = keyArea.getX() + ((float) tickIndex + 0.5f) * tickSpacing;
+        const auto tickHeight = 3.0f + 9.0f * glow;
+        g.setColour (ink.withAlpha (0.28f + 0.72f * glow));
+        g.fillRect (x - 0.5f, keyArea.getBottom() - tickHeight, 1.0f, tickHeight);
     }
 
     g.setColour (ink); g.setFont (font (10.0f));
@@ -2033,6 +2001,47 @@ void OneShotSamplerAudioProcessorEditor::paint (juce::Graphics& g)
         {
             // The interactive EQ pad owns this whole rectangle.
         }
+        else if (selectedFx == 2)
+        {
+            // Detune field: four copies of one wave, each drifting slightly apart.
+            const auto field = moduleVisual.reduced (12).toFloat();
+            const auto time = (float) (juce::Time::getMillisecondCounterHiRes() * 0.001);
+            for (int voice = 0; voice < 4; ++voice)
+            {
+                juce::Path wave;
+                const auto detune = 1.0f + ((float) voice - 1.5f) * 0.045f;
+                for (int step = 0; step <= 48; ++step)
+                {
+                    const auto t = (float) step / 48.0f;
+                    const auto point = juce::Point<float> (field.getX() + t * field.getWidth(),
+                                                           field.getCentreY() + std::sin (t * 12.0f * detune + time * (1.2f + 0.15f * (float) voice)) * field.getHeight() * 0.32f);
+                    if (step == 0) wave.startNewSubPath (point); else wave.lineTo (point);
+                }
+                g.setColour (ink.withAlpha (0.35f + 0.65f * (float) voice / 3.0f));
+                g.strokePath (wave, juce::PathStrokeType (1.0f));
+            }
+        }
+        else if (selectedFx == 9)
+        {
+            // Chance field: a stepped sample-and-hold line that jumps to a new
+            // random level every beat of its clock.
+            const auto field = moduleVisual.reduced (12).toFloat();
+            const auto tick = (int) std::floor (juce::Time::getMillisecondCounterHiRes() * 0.0035);
+            constexpr int stepsAcross = 14;
+            juce::Path steps;
+            for (int step = 0; step < stepsAcross; ++step)
+            {
+                const auto seed = (unsigned int) (tick + step) * 2654435761u;
+                const auto value = (float) ((seed >> 8) & 1023) / 1023.0f;
+                const auto x0 = field.getX() + field.getWidth() * (float) step / (float) stepsAcross;
+                const auto x1 = field.getX() + field.getWidth() * (float) (step + 1) / (float) stepsAcross;
+                const auto y = field.getBottom() - value * field.getHeight();
+                if (step == 0) steps.startNewSubPath (x0, y); else steps.lineTo (x0, y);
+                steps.lineTo (x1, y);
+            }
+            g.setColour (ink);
+            g.strokePath (steps, juce::PathStrokeType (1.2f));
+        }
         else if (selectedFx == 1)
         {
             drawSpaceRoom (g, moduleVisual.toFloat().reduced (10.0f), (float) (juce::Time::getMillisecondCounterHiRes() * 0.001), visualSignalLevel, ink);
@@ -2042,7 +2051,7 @@ void OneShotSamplerAudioProcessorEditor::paint (juce::Graphics& g)
             for (int r = 1; r < 5; ++r) g.drawEllipse (visualCentre.x - r * 19.0f, visualCentre.y - r * 11.0f, r * 38.0f, r * 22.0f, 0.9f);
             g.drawLine ((float) moduleVisual.getX() + 18.0f, visualCentre.y, (float) moduleVisual.getRight() - 18.0f, visualCentre.y, 0.9f);
         }
-        if (selectedFx != 1)
+        if (selectedFx != 1 && selectedFx != 2 && selectedFx != 9 && selectedFx != 5)
             g.fillEllipse (visualCentre.x - 3.0f, visualCentre.y - 3.0f, 6.0f, 6.0f);
     }
 
@@ -2054,13 +2063,34 @@ void OneShotSamplerAudioProcessorEditor::paint (juce::Graphics& g)
 
     // Fixed information rail makes this a board rather than a collection of tabs.
     g.setColour (ink); g.setFont (font (9.0f));
-    g.drawText ("FRWK / Modular Beta 2", footer.getX() + 18, footer.getY(), 170, footer.getHeight(), juce::Justification::centredLeft);
-    g.drawText ("Key C3", footer.getX() + 205, footer.getY(), 48, footer.getHeight(), juce::Justification::centred);
-    g.drawText ("120 BPM", footer.getX() + 260, footer.getY(), 60, footer.getHeight(), juce::Justification::centred);
+    static const char* footerNoteNames[12] = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+    const auto keyText = shownNote >= 0 ? juce::String (footerNoteNames[shownNote % 12]) + juce::String (shownNote / 12 - 2) : juce::String ("C3");
+    const auto hostBpm = audioProcessor.getHostBpm();
+    const auto bpmText = hostBpm > 0.0 ? juce::String (juce::roundToInt (hostBpm)) + " BPM" : juce::String ("-- BPM");
+    const auto footerName = audioProcessor.hasLoadedSample() ? audioProcessor.getSampleName().upToLastOccurrenceOf (".", false, false) : juce::String ("No sample loaded");
+    g.drawText (footerName, footer.getX() + 18, footer.getY(), 180, footer.getHeight(), juce::Justification::centredLeft, true);
+    g.drawText ("Key " + keyText, footer.getX() + 205, footer.getY(), 56, footer.getHeight(), juce::Justification::centred);
+    g.drawText (bpmText, footer.getX() + 262, footer.getY(), 60, footer.getHeight(), juce::Justification::centred);
     g.setColour (ink.withAlpha (0.30f)); g.fillRect (footer.getX() + 326, footer.getY() + 13, 70, 3);
-    g.setColour (ink); g.fillRect (footer.getX() + 326, footer.getY() + 13, 38, 3);
-    g.drawText ("8 voices", footer.getX() + 410, footer.getY(), 70, footer.getHeight(), juce::Justification::centred);
-    for (int i = 0; i < 6; ++i) { g.setColour (i < 4 ? ink : ink.withAlpha (0.30f)); g.fillRect (footer.getRight() - 18 - i * 6, footer.getY() + 10, 1, 10); }
+    g.setColour (ink); g.fillRect (footer.getX() + 326, footer.getY() + 13, juce::roundToInt (70.0f * juce::jlimit (0.0f, 1.0f, audioProcessor.getPlaybackProgress())), 3);
+    const auto voices = audioProcessor.getActiveVoiceCount();
+    g.drawText (juce::String (voices) + (voices == 1 ? " voice" : " voices"), footer.getX() + 410, footer.getY(), 70, footer.getHeight(), juce::Justification::centred);
+    const auto litTicks = juce::jlimit (0, 6, (int) std::ceil (visualSignalLevel * 6.0f));
+    for (int i = 0; i < 6; ++i) { g.setColour (i < litTicks ? ink : ink.withAlpha (0.30f)); g.fillRect (footer.getRight() - 18 - i * 6, footer.getY() + 10, 1, 10); }
+}
+
+void OneShotSamplerAudioProcessorEditor::paintOverChildren (juce::Graphics& g)
+{
+    // A card that is switched off sinks into a darker blue, controls and all,
+    // so on and off read at a glance.
+    for (size_t i = 0; i < beta2EffectTabBounds.size(); ++i)
+    {
+        const auto dim = 1.0f - juce::jlimit (0.0f, 1.0f, fxCardReveal[i]);
+        if (dim < 0.02f)
+            continue;
+        g.setColour (juce::Colours::black.withAlpha (0.32f * dim));
+        g.fillRoundedRectangle (beta2EffectTabBounds[i].toFloat().reduced (1.0f), 16.0f);
+    }
 }
 
 void OneShotSamplerAudioProcessorEditor::rebuildBeta2DotLayers()
@@ -2589,7 +2619,7 @@ void OneShotSamplerAudioProcessorEditor::timerCallback()
     // wrapping this value avoids the single-frame discontinuity a modulo reset
     // can introduce in complex visuals.
     // Preserve the same visual speed after moving from 30 to 60 fps.
-    fxVisualPhase += 0.0045f;
+    fxVisualPhase += 0.0056f;
     const auto meterTarget = juce::jlimit (0.0f, 1.0f, audioProcessor.getOutputLevel());
     // Fast attack, slow release: visual meters breathe with the audio rather
     // than flickering between host audio blocks.
@@ -2647,6 +2677,8 @@ void OneShotSamplerAudioProcessorEditor::polishKnobs()
         }
         label->setText (label->getText().toUpperCase(), juce::dontSendNotification);
         label->setFont (knobCaptionFont());
+        label->setMinimumHorizontalScale (0.6f);
+        label->setBorderSize ({ 0, 0, 0, 0 });
     }
     initialisedReadouts = true;
 }

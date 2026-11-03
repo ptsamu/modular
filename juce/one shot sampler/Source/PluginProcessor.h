@@ -45,6 +45,7 @@ public:
     void copyScopeSamples (float* destination, int numberOfSamples) const noexcept;
     float getPeakLeft() const noexcept { return peakLeft.load (std::memory_order_relaxed); }
     float getPeakRight() const noexcept { return peakRight.load (std::memory_order_relaxed); }
+    double getHostBpm() const noexcept { return hostBpm.load (std::memory_order_relaxed); }
     int getLastNote() const noexcept { return lastNote.load (std::memory_order_relaxed); }
     float getLastVelocity() const noexcept { return lastVelocity.load (std::memory_order_relaxed); }
     unsigned int getNoteCounter() const noexcept { return noteCounter.load (std::memory_order_relaxed); }
@@ -122,6 +123,7 @@ private:
     std::array<std::atomic<float>, scopeBufferSize> scopeBuffer {};
     std::atomic<int> scopeWritePosition { 0 };
     std::atomic<float> peakLeft { 0.0f }, peakRight { 0.0f };
+    std::atomic<double> hostBpm { 0.0 };
     std::atomic<int> lastNote { -1 };
     std::atomic<float> lastVelocity { 0.0f };
     std::atomic<unsigned int> noteCounter { 0 };

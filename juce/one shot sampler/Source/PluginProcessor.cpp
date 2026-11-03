@@ -256,6 +256,13 @@ void OneShotSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffe
 
     outputGain.setTargetValue (juce::Decibels::decibelsToGain (parameters.getRawParameterValue ("outputGain")->load()));
 
+    double bpm = 0.0;
+    if (auto* playHead = getPlayHead())
+        if (auto position = playHead->getPosition())
+            if (auto hostTempo = position->getBpm())
+                bpm = *hostTempo;
+    hostBpm.store (bpm, std::memory_order_relaxed);
+
     const auto sample = std::atomic_load (&loadedSample);
     if (sample == nullptr)
     {
