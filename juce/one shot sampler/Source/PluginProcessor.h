@@ -40,6 +40,14 @@ public:
     float getEnvelopeLevel() const noexcept { return envelopeLevel.load(); }
     float getPlaybackProgress() const noexcept { return playbackProgress.load(); }
     int getActiveVoiceCount() const noexcept { return activeVoiceCount.load(); }
+    // Lock-free taps for the editor's oscilloscope, meters and note display.
+    static constexpr int scopeBufferSize = 4096;
+    void copyScopeSamples (float* destination, int numberOfSamples) const noexcept;
+    float getPeakLeft() const noexcept { return peakLeft.load (std::memory_order_relaxed); }
+    float getPeakRight() const noexcept { return peakRight.load (std::memory_order_relaxed); }
+    int getLastNote() const noexcept { return lastNote.load (std::memory_order_relaxed); }
+    float getLastVelocity() const noexcept { return lastVelocity.load (std::memory_order_relaxed); }
+    unsigned int getNoteCounter() const noexcept { return noteCounter.load (std::memory_order_relaxed); }
     float getSampleLengthSeconds() const;
     int getSampleChannels() const;
     int getFxSlotEffect (int slot) const;
@@ -111,6 +119,12 @@ private:
     std::atomic<float> envelopeLevel { 0.0f };
     std::atomic<float> playbackProgress { 0.0f };
     std::atomic<int> activeVoiceCount { 0 };
+    std::array<std::atomic<float>, scopeBufferSize> scopeBuffer {};
+    std::atomic<int> scopeWritePosition { 0 };
+    std::atomic<float> peakLeft { 0.0f }, peakRight { 0.0f };
+    std::atomic<int> lastNote { -1 };
+    std::atomic<float> lastVelocity { 0.0f };
+    std::atomic<unsigned int> noteCounter { 0 };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (OneShotSamplerAudioProcessor)
 };

@@ -199,6 +199,8 @@ private:
     void setPerformancePosition (float x, float y);
     void applyPerformanceScene (int scene);
     void rebuildBeta2DotLayers();
+    void polishKnobs();
+    void updateScopeAndMeters();
     void timerCallback() override;
 
     OneShotSamplerAudioProcessor& audioProcessor;
@@ -272,6 +274,19 @@ private:
     // Meter smoothing belongs on the UI thread. It makes signal-reactive
     // motion feel musical while keeping the processor lock-free.
     float visualSignalLevel = 0.0f;
+    // Note-reactive oscilloscope, stereo meters and key display (UI thread only).
+    static constexpr int scopeReadSamples = 2048;
+    static constexpr int scopeWindowSamples = 720;
+    std::array<float, scopeReadSamples> scopeCopy {};
+    juce::Path scopeTrace, scopeGhost;
+    float scopeDrawGain = 1.0f;
+    bool initialisedReadouts = false;
+    std::array<float, 2> meterLevel {}, meterPeakHold {};
+    std::array<int, 2> meterHoldFrames {};
+    std::array<float, 24> keyGlow {};
+    unsigned int seenNoteCounter = 0;
+    int shownNote = -1;
+    float shownVelocity = 0.0f;
     juce::Image modularBadge;
     juce::Image darkFrameworksMark;
     juce::Image frameworksHalftoneMark;

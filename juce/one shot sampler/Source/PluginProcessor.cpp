@@ -54,7 +54,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout OneShotSamplerAudioProcessor
 
     layout.add (std::make_unique<juce::AudioParameterFloat> (
         "outputGain", "Output Gain",
-        juce::NormalisableRange<float> (-60.0f, 6.0f, 0.1f), 0.0f,
+        juce::NormalisableRange<float> (-60.0f, 6.0f, 0.1f, 3.02f), 0.0f, // skew puts 0 dB at 75 on a 0-100 dial
         juce::AudioParameterFloatAttributes().withLabel ("dB")));
 
     layout.add (std::make_unique<juce::AudioParameterFloat> ("attack", "Attack", juce::NormalisableRange<float> (0.001f, 3.0f, 0.0001f, 0.35f), 0.01f, juce::AudioParameterFloatAttributes().withLabel ("s")));
@@ -260,6 +260,8 @@ void OneShotSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffe
     if (sample == nullptr)
     {
         outputLevel.store (0.0f);
+        peakLeft.store (0.0f);
+        peakRight.store (0.0f);
         envelopeLevel.store (0.0f);
         playbackProgress.store (0.0f);
         activeVoiceCount.store (0);
@@ -288,6 +290,9 @@ void OneShotSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffe
                 voice->samplePosition = 0.0;
                 voice->active = true;
                 voice->envelope.noteOn();
+                lastNote.store (voice->midiNote, std::memory_order_relaxed);
+                lastVelocity.store (voice->velocity, std::memory_order_relaxed);
+                noteCounter.fetch_add (1, std::memory_order_relaxed);
             }
             else if (message.isNoteOff())
             {
@@ -713,6 +718,39 @@ void OneShotSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffe
             }
         }
     outputLevel.store (juce::jlimit (0.0f, 1.0f, buffer.getMagnitude (0, buffer.getNumSamples())));
+
+    // Feed the editor's scope and meters. Mono mix into a ring buffer; the
+    // editor reads it without locks and finds its own trigger point.
+    const auto numChannels = buffer.getNumChannels();
+    const auto numSamples = buffer.getNumSamples();
+    if (numChannels > 0 && numSamples > 0)
+    {
+        const auto* left = buffer.getReadPointer (0);
+        const auto* right = buffer.getReadPointer (numChannels > 1 ? 1 : 0);
+        auto write = scopeWritePosition.load (std::memory_order_relaxed);
+        float blockPeakLeft = 0.0f, blockPeakRight = 0.0f;
+        for (int i = 0; i < numSamples; ++i)
+        {
+            blockPeakLeft = juce::jmax (blockPeakLeft, std::abs (left[i]));
+            blockPeakRight = juce::jmax (blockPeakRight, std::abs (right[i]));
+            scopeBuffer[(size_t) write].store (0.5f * (left[i] + right[i]), std::memory_order_relaxed);
+            write = (write + 1) & (scopeBufferSize - 1);
+        }
+        scopeWritePosition.store (write, std::memory_order_release);
+        peakLeft.store (juce::jlimit (0.0f, 1.0f, blockPeakLeft), std::memory_order_relaxed);
+        peakRight.store (juce::jlimit (0.0f, 1.0f, blockPeakRight), std::memory_order_relaxed);
+    }
+}
+
+void OneShotSamplerAudioProcessor::copyScopeSamples (float* destination, int numberOfSamples) const noexcept
+{
+    numberOfSamples = juce::jmin (numberOfSamples, scopeBufferSize);
+    auto read = (scopeWritePosition.load (std::memory_order_acquire) - numberOfSamples + scopeBufferSize) & (scopeBufferSize - 1);
+    for (int i = 0; i < numberOfSamples; ++i)
+    {
+        destination[i] = scopeBuffer[(size_t) read].load (std::memory_order_relaxed);
+        read = (read + 1) & (scopeBufferSize - 1);
+    }
 }
 
 bool OneShotSamplerAudioProcessor::loadSample (const juce::File& file)
