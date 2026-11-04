@@ -18,6 +18,6 @@ Modular's sound-shaping approach is suited to a range of production tasks:
 - Tonal shaping and harmonic character development
 - Layering and enriching samples
 - Creating atmospheric depth and stereo dimension
-- Processing drums, basses, synthesizers, and other audio sources
+- Processing one shot basses, synthesizers, and other audio sources
 - Developing distinctive sounds for electronic music, hip-hop, cinematic production, and experimental audio
 In summary: Modular is a sound-shaping tool built around the interaction of texture, tonal character, and spatial depth. Its purpose is to provide producers with a focused interface for manipulating the character and perception of audio rather than relying exclusively on conventional corrective processing.
