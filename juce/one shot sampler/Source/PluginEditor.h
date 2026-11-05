@@ -178,7 +178,6 @@ public:
     ~OneShotSamplerAudioProcessorEditor() override;
 
     void paint (juce::Graphics&) override;
-    void paintOverChildren (juce::Graphics&) override;
     void resized() override;
     bool isInterestedInFileDrag (const juce::StringArray& files) override;
     void filesDropped (const juce::StringArray& files, int x, int y) override;

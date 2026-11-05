@@ -115,18 +115,6 @@ juce::AudioProcessorValueTreeState::ParameterLayout OneShotSamplerAudioProcessor
     layout.add (std::make_unique<juce::AudioParameterFloat> ("randomRate", "Random Rate", juce::NormalisableRange<float> (1.0f, 24.0f, 0.1f), 6.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> ("randomMix", "Random Mix", juce::NormalisableRange<float> (0.0f, 1.0f, 0.01f), 0.01f));
     layout.add (std::make_unique<juce::AudioParameterBool> ("randomEnabled", "Random Enabled", false));
-    // Kept only so older sessions can still restore cleanly. Texture Lab is
-    // now controlled directly by its three engine switches.
-    layout.add (std::make_unique<juce::AudioParameterBool> ("textureEnabled", "Texture Lab Legacy Master", true));
-    layout.add (std::make_unique<juce::AudioParameterFloat> ("eqLow", "EQ Low", juce::NormalisableRange<float> (-18.0f, 18.0f, 0.1f), 0.0f, juce::AudioParameterFloatAttributes().withLabel ("dB")));
-    layout.add (std::make_unique<juce::AudioParameterFloat> ("eqMid", "EQ Mid", juce::NormalisableRange<float> (-18.0f, 18.0f, 0.1f), 0.0f, juce::AudioParameterFloatAttributes().withLabel ("dB")));
-    layout.add (std::make_unique<juce::AudioParameterFloat> ("eqHigh", "EQ High", juce::NormalisableRange<float> (-18.0f, 18.0f, 0.1f), 0.0f, juce::AudioParameterFloatAttributes().withLabel ("dB")));
-    layout.add (std::make_unique<juce::AudioParameterFloat> ("eqLowFreq", "EQ Low Frequency", juce::NormalisableRange<float> (20.0f, 20000.0f, 1.0f, 0.25f), 180.0f, juce::AudioParameterFloatAttributes().withLabel ("Hz")));
-    layout.add (std::make_unique<juce::AudioParameterFloat> ("eqMidFreq", "EQ Mid Frequency", juce::NormalisableRange<float> (20.0f, 20000.0f, 1.0f, 0.25f), 1200.0f, juce::AudioParameterFloatAttributes().withLabel ("Hz")));
-    layout.add (std::make_unique<juce::AudioParameterFloat> ("eqHighFreq", "EQ High Frequency", juce::NormalisableRange<float> (20.0f, 20000.0f, 1.0f, 0.25f), 6500.0f, juce::AudioParameterFloatAttributes().withLabel ("Hz")));
-    layout.add (std::make_unique<juce::AudioParameterFloat> ("eqLowQ", "EQ Low Width", juce::NormalisableRange<float> (0.2f, 8.0f, 0.01f), 0.75f));
-    layout.add (std::make_unique<juce::AudioParameterFloat> ("eqMidQ", "EQ Mid Width", juce::NormalisableRange<float> (0.2f, 8.0f, 0.01f), 0.8f));
-    layout.add (std::make_unique<juce::AudioParameterFloat> ("eqHighQ", "EQ High Width", juce::NormalisableRange<float> (0.2f, 8.0f, 0.01f), 0.75f));
     layout.add (std::make_unique<juce::AudioParameterBool> ("eqEnabled", "EQ Enabled", false));
     const std::array<float, 7> eqFrequencies { 60.0f, 170.0f, 450.0f, 1100.0f, 2800.0f, 7000.0f, 14000.0f };
     for (int band = 0; band < 7; ++band)
@@ -209,7 +197,7 @@ void OneShotSamplerAudioProcessor::prepareToPlay (double sampleRate, int samples
     flangerBuffer.setSize (2, modulationBufferLength); flangerBuffer.clear();
     flutterBuffer.setSize (2, modulationBufferLength); flutterBuffer.clear();
     chorusWritePosition = flangerWritePosition = flutterWritePosition = 0;
-    chorusPhase = flangerPhase = flutterPhase = 0.0f;
+    chorusPhase = flangerPhase = 0.0f;
     flutterWowPhase = flutterDriftPhase = 0.0f;
     for (auto* smoother : { &delayMixSmooth, &reverbMixSmooth, &chorusMixSmooth, &flangerMixSmooth, &flutterMixSmooth })
         smoother->reset (sampleRate, 0.03);
@@ -223,7 +211,7 @@ void OneShotSamplerAudioProcessor::prepareToPlay (double sampleRate, int samples
     textureBuffer.setSize (2, static_cast<int> (sampleRate * 2.5));
     textureBuffer.clear();
     textureWritePosition = 0;
-    grainReadPosition = harmonyReadPosition = randomReadPosition = 0.0f;
+    grainReadPosition = randomReadPosition = 0.0f;
     textureOrbitPhase = 0.0f;
     grainSamplesUntilReset = randomSamplesUntilReset = 0;
     for (auto* wet : { &granularWet, &harmonyWet, &randomWet })
@@ -316,7 +304,7 @@ void OneShotSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffe
             if (! voice.active)
                 continue;
             const auto sourceIndex = static_cast<int> (voice.samplePosition);
-            if (sourceIndex >= sample->audio.getNumSamples() - 1)
+            if (sourceIndex >= sample->audio.getNumSamples())
             {
                 voice.envelope.reset();
                 voice.active = false;
@@ -330,7 +318,7 @@ void OneShotSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffe
             {
                 const auto sourceChannel = juce::jmin (channel, sample->audio.getNumChannels() - 1);
                 const auto first = sample->audio.getSample (sourceChannel, sourceIndex);
-                const auto second = sample->audio.getSample (sourceChannel, sourceIndex + 1);
+                const auto second = sample->audio.getSample (sourceChannel, juce::jmin (sourceIndex + 1, sample->audio.getNumSamples() - 1));
                 buffer.addSample (channel, frame, (first + (second - first) * fraction) * gain);
             }
             voice.samplePosition += (sample->sampleRate / currentSampleRate) * voice.playbackRate;
@@ -352,10 +340,8 @@ void OneShotSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffe
     activeVoiceCount.store (liveVoices);
     playbackProgress.store (juce::jlimit (0.0f, 1.0f, progress));
 
-    auto bpm = 120.0;
-    if (const auto* playHead = getPlayHead())
-        if (const auto position = playHead->getPosition())
-            if (position->getBpm().hasValue()) bpm = *position->getBpm();
+    // Host tempo (clamped so a zero or NaN tempo can never reach the delay maths).
+    const auto bpm = reportedHostTempo > 0.0 && std::isfinite (reportedHostTempo) ? juce::jlimit (20.0, 400.0, reportedHostTempo) : 120.0;
     juce::dsp::AudioBlock<float> block (buffer);
     // Some hosts exceed the block size they announced. Never write past the
     // reverb's scratch buffer.
@@ -586,14 +572,12 @@ void OneShotSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffe
             buffer.setSample (0, frame, left * (1.0f - mix) + wetLeft * mix);
             if (buffer.getNumChannels() > 1) buffer.setSample (1, frame, right * (1.0f - mix) + wetRight * mix);
             flutterWritePosition = (flutterWritePosition + 1) % flutterBuffer.getNumSamples();
-            flutterPhase = std::fmod (flutterPhase + juce::MathConstants<float>::twoPi * rate / (float) currentSampleRate, juce::MathConstants<float>::twoPi);
             flutterWowPhase = std::fmod (flutterWowPhase + juce::MathConstants<float>::twoPi * wowRate / (float) currentSampleRate, juce::MathConstants<float>::twoPi);
             flutterDriftPhase = std::fmod (flutterDriftPhase + juce::MathConstants<float>::twoPi * rate * 1.91f / (float) currentSampleRate, juce::MathConstants<float>::twoPi);
         }
     };
     const auto wrapTexturePosition = [this] (float position) { const auto length = (float) textureBuffer.getNumSamples(); while (position < 0.0f) position += length; while (position >= length) position -= length; return position; };
     const auto readTexture = [this, &wrapTexturePosition] (int channel, float position) { position = wrapTexturePosition (position); const auto first = (int) position; const auto second = (first + 1) % textureBuffer.getNumSamples(); const auto fraction = position - first; return textureBuffer.getSample (channel, first) + (textureBuffer.getSample (channel, second) - textureBuffer.getSample (channel, first)) * fraction; };
-    const auto writeTexture = [this, &buffer] { for (int frame = 0; frame < buffer.getNumSamples(); ++frame) { for (int channel = 0; channel < buffer.getNumChannels(); ++channel) textureBuffer.setSample (channel, textureWritePosition, buffer.getSample (channel, frame)); textureWritePosition = (textureWritePosition + 1) % textureBuffer.getNumSamples(); } };
 
     // Each Texture Lab engine owns its own state. There is deliberately no
     // hidden master gate: turning Granular, Orbit, or Random on is enough.
@@ -601,23 +585,6 @@ void OneShotSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffe
     harmonyWet.setTargetValue (parameters.getRawParameterValue ("harmonyEnabled")->load() > 0.5f ? parameters.getRawParameterValue ("harmonyMix")->load() : 0.0f);
     randomWet.setTargetValue (parameters.getRawParameterValue ("randomEnabled")->load() > 0.5f ? parameters.getRawParameterValue ("randomMix")->load() : 0.0f);
 
-    const auto applyGranular = [this, &buffer, &readTexture, &wrapTexturePosition, &writeTexture]
-    {
-        const auto size = parameters.getRawParameterValue ("granularSize")->load() * 0.001f * (float) currentSampleRate;
-        const auto resetInterval = juce::jmax (1, (int) (currentSampleRate / parameters.getRawParameterValue ("granularDensity")->load()));
-        const auto rate = std::pow (2.0f, parameters.getRawParameterValue ("granularPitch")->load() / 12.0f);
-        for (int frame = 0; frame < buffer.getNumSamples(); ++frame) { if (--grainSamplesUntilReset <= 0) { grainSamplesUntilReset = resetInterval; grainReadPosition = wrapTexturePosition ((float) textureWritePosition - size * (0.4f + textureRandom.nextFloat())); } const auto progress = 1.0f - (float) grainSamplesUntilReset / (float) resetInterval; const auto window = std::sin (juce::MathConstants<float>::pi * progress); const auto wet = granularWet.getNextValue() * window; for (int ch = 0; ch < buffer.getNumChannels(); ++ch) { const auto dry = buffer.getSample (ch, frame); const auto grain = readTexture (ch, grainReadPosition); textureBuffer.setSample (ch, textureWritePosition, dry); buffer.setSample (ch, frame, dry + (grain - dry) * wet); } textureWritePosition = (textureWritePosition + 1) % textureBuffer.getNumSamples(); grainReadPosition = wrapTexturePosition (grainReadPosition + rate); }
-    };
-    const auto applyHarmony = [this, &buffer, &readTexture, &wrapTexturePosition]
-    {
-        const auto rate = std::pow (2.0f, (parameters.getRawParameterValue ("harmonyShift")->load() + parameters.getRawParameterValue ("harmonyDetune")->load() / 100.0f) / 12.0f);
-        for (int frame = 0; frame < buffer.getNumSamples(); ++frame) { if (harmonyReadPosition == 0.0f) harmonyReadPosition = wrapTexturePosition ((float) textureWritePosition - currentSampleRate * 0.12f); const auto wet = harmonyWet.getNextValue(); for (int ch = 0; ch < buffer.getNumChannels(); ++ch) { const auto dry = buffer.getSample (ch, frame); const auto shifted = readTexture (ch, harmonyReadPosition); textureBuffer.setSample (ch, textureWritePosition, dry); buffer.setSample (ch, frame, dry + (shifted - dry) * wet); } textureWritePosition = (textureWritePosition + 1) % textureBuffer.getNumSamples(); harmonyReadPosition = wrapTexturePosition (harmonyReadPosition + rate); }
-    };
-    const auto applyRandom = [this, &buffer, &readTexture, &wrapTexturePosition]
-    {
-        const auto amount = parameters.getRawParameterValue ("randomAmount")->load(); const auto interval = juce::jmax (1, (int) (currentSampleRate / parameters.getRawParameterValue ("randomRate")->load()));
-        for (int frame = 0; frame < buffer.getNumSamples(); ++frame) { if (--randomSamplesUntilReset <= 0) { randomSamplesUntilReset = interval; randomReadPosition = wrapTexturePosition ((float) textureWritePosition - textureRandom.nextFloat() * textureBuffer.getNumSamples() * amount); } const auto progress = 1.0f - (float) randomSamplesUntilReset / (float) interval; const auto wet = randomWet.getNextValue() * std::sin (juce::MathConstants<float>::pi * progress); for (int ch = 0; ch < buffer.getNumChannels(); ++ch) { const auto dry = buffer.getSample (ch, frame); const auto random = readTexture (ch, randomReadPosition); textureBuffer.setSample (ch, textureWritePosition, dry); buffer.setSample (ch, frame, dry + (random - dry) * wet); } textureWritePosition = (textureWritePosition + 1) % textureBuffer.getNumSamples(); randomReadPosition = wrapTexturePosition (randomReadPosition + 1.0f + (textureRandom.nextFloat() - 0.5f) * amount * 0.12f); }
-    };
     const auto applyTextureLab = [this, &buffer, &readTexture, &wrapTexturePosition]
     {
         const auto grainSize = parameters.getRawParameterValue ("granularSize")->load() * 0.001f * (float) currentSampleRate;
@@ -709,13 +676,26 @@ void OneShotSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffe
         || harmonyWet.getCurrentValue() > 0.0001f || harmonyWet.getTargetValue() > 0.0001f
         || randomWet.getCurrentValue() > 0.0001f || randomWet.getTargetValue() > 0.0001f)
         applyTextureLab();
-    if (! delayInRack) { delayBuffer.clear(); delayWritePosition = 0; }
+    if (delayInRack)
+        delayHasContent = true;
+    else if (delayHasContent)
+    {
+        delayBuffer.clear();
+        delayWritePosition = 0;
+        delayHasContent = false;
+    }
     // Transparent safety ceiling for stacked effects. Normal sample levels are
     // left completely unchanged; protection begins only above the threshold.
     for (int channel = 0; channel < buffer.getNumChannels(); ++channel)
         for (int sampleIndex = 0; sampleIndex < buffer.getNumSamples(); ++sampleIndex)
         {
-            const auto input = buffer.getSample (channel, sampleIndex);
+            auto input = buffer.getSample (channel, sampleIndex);
+            if (! std::isfinite (input))
+            {
+                // A NaN or infinity would latch inside the delay/chorus feedback loops.
+                buffer.setSample (channel, sampleIndex, 0.0f);
+                continue;
+            }
             constexpr float threshold = 0.966f; // -0.3 dBFS ceiling
             const auto magnitude = std::abs (input);
             if (magnitude > threshold)
@@ -763,7 +743,7 @@ void OneShotSamplerAudioProcessor::copyScopeSamples (float* destination, int num
 bool OneShotSamplerAudioProcessor::loadSample (const juce::File& file)
 {
     std::unique_ptr<juce::AudioFormatReader> reader (formatManager.createReaderFor (file));
-    if (reader == nullptr || reader->lengthInSamples <= 0)
+    if (reader == nullptr || reader->lengthInSamples <= 0 || reader->sampleRate <= 0.0)
         return false;
 
     auto sample = std::make_shared<SampleData>();
@@ -788,20 +768,6 @@ juce::String OneShotSamplerAudioProcessor::getSampleName() const
 bool OneShotSamplerAudioProcessor::hasLoadedSample() const
 {
     return std::atomic_load (&loadedSample) != nullptr;
-}
-
-float OneShotSamplerAudioProcessor::getSampleLengthSeconds() const
-{
-    if (const auto sample = std::atomic_load (&loadedSample))
-        return sample->sampleRate > 0.0 ? (float) sample->audio.getNumSamples() / (float) sample->sampleRate : 0.0f;
-    return 0.0f;
-}
-
-int OneShotSamplerAudioProcessor::getSampleChannels() const
-{
-    if (const auto sample = std::atomic_load (&loadedSample))
-        return sample->audio.getNumChannels();
-    return 0;
 }
 
 std::vector<float> OneShotSamplerAudioProcessor::getWaveformPeaks (int numberOfPoints) const
@@ -857,6 +823,8 @@ void OneShotSamplerAudioProcessor::setStateInformation (const void* data, int si
             const juce::File savedSample (savedSamplePath);
             if (savedSample.existsAsFile())
                 loadSample (savedSample);
+            else
+                std::atomic_store (&loadedSample, std::shared_ptr<SampleData>());
         }
 }
 

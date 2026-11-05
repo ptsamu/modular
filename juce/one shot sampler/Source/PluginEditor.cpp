@@ -7,8 +7,8 @@ namespace
     // Every knob caption in the plugin uses this one font.
     juce::Font knobCaptionFont()
     {
-        juce::Font font ("Helvetica", 9.0f, juce::Font::bold);
-        font.setExtraKerningFactor (0.04f);
+        juce::Font font ("Helvetica", 8.5f, juce::Font::bold);
+        font.setExtraKerningFactor (0.05f);
         return font;
     }
 
@@ -344,12 +344,16 @@ void FrameworksLookAndFeel::drawLabel (juce::Graphics& g, juce::Label& label)
         // ADSR and master controls consistent with the new engine cards.
         g.setColour (label.findColour (juce::Label::textColourId));
         // One readout size for every knob, so no value looks bigger than another.
-        g.setFont (juce::Font ("Helvetica", 11.0f, juce::Font::plain));
+        g.setFont (juce::Font ("Helvetica", 10.0f, juce::Font::plain));
         g.drawFittedText (label.getText(), label.getLocalBounds(), juce::Justification::centred, 1, 0.7f);
         return;
     }
 
-    LookAndFeel_V4::drawLabel (g, label);
+    // Every other label (knob captions included) is drawn in the font it was
+    // given. The base class would replace it with getLabelFont().
+    g.setColour (label.findColour (juce::Label::textColourId));
+    g.setFont (label.getFont());
+    g.drawFittedText (label.getText(), label.getLocalBounds(), label.getJustificationType(), 1, label.getMinimumHorizontalScale());
 }
 
 void FrameworksLookAndFeel::drawComboBox (juce::Graphics& g, int width, int height, bool,
@@ -1542,11 +1546,12 @@ OneShotSamplerAudioProcessorEditor::OneShotSamplerAudioProcessorEditor (OneShotS
     addMouseListener (this, true);
     refreshEffectEnableStates();
     showFxPage (false);
+    setOpaque (true);
     setSize (1640, 720);
     setResizable (false, false);
     polishKnobs();
     // 30 fps is plenty for these slow visuals and keeps the host UI responsive.
-    startTimerHz (24);
+    startTimerHz (30);
 }
 
 OneShotSamplerAudioProcessorEditor::~OneShotSamplerAudioProcessorEditor()
@@ -1707,8 +1712,11 @@ void OneShotSamplerAudioProcessorEditor::paint (juce::Graphics& g)
         const auto pulse = fxCardPulse[i];
         const auto card = tab.toFloat();
         // Disabled cards rest quieter; enabled and hovered cards come to full ink.
-        const auto lineAlpha = juce::jmin (1.0f, 0.55f + 0.45f * reveal + (hovered ? 0.20f : 0.0f));
-        const auto cardInk = ink.withAlpha (lineAlpha);
+        // On and off read from the card's fill: a switched-off card sits in a
+        // deeper blue while keeping full-strength ink, so nothing looks faded.
+        const auto cardInk = ink;
+        g.setColour (blue.interpolatedWith (juce::Colour (0xff0050c0), 1.0f - juce::jlimit (0.0f, 1.0f, reveal)));
+        g.fillRoundedRectangle (card.reduced (1.0f), 16.0f);
 
         g.setColour (cardInk);
         g.drawRoundedRectangle (card.reduced (1.0f), 16.0f, (active ? 2.0f : 1.0f) + pulse * 1.2f);
@@ -2079,20 +2087,6 @@ void OneShotSamplerAudioProcessorEditor::paint (juce::Graphics& g)
     for (int i = 0; i < 6; ++i) { g.setColour (i < litTicks ? ink : ink.withAlpha (0.30f)); g.fillRect (footer.getRight() - 18 - i * 6, footer.getY() + 10, 1, 10); }
 }
 
-void OneShotSamplerAudioProcessorEditor::paintOverChildren (juce::Graphics& g)
-{
-    // A card that is switched off sinks into a darker blue, controls and all,
-    // so on and off read at a glance.
-    for (size_t i = 0; i < beta2EffectTabBounds.size(); ++i)
-    {
-        const auto dim = 1.0f - juce::jlimit (0.0f, 1.0f, fxCardReveal[i]);
-        if (dim < 0.02f)
-            continue;
-        g.setColour (juce::Colours::black.withAlpha (0.32f * dim));
-        g.fillRoundedRectangle (beta2EffectTabBounds[i].toFloat().reduced (1.0f), 16.0f);
-    }
-}
-
 void OneShotSamplerAudioProcessorEditor::rebuildBeta2DotLayers()
 {
     // The line design is completely flat: no dotted pegboard layers.
@@ -2149,13 +2143,6 @@ void OneShotSamplerAudioProcessorEditor::resized()
     lower.removeFromLeft (10);
     beta2EffectTabBounds[4] = lower;
 
-    const auto placeControl = [] (juce::Slider& slider, juce::Label& label, juce::Rectangle<int> area)
-    {
-        slider.setBounds (area.withTrimmedTop (8).withHeight (64));
-        label.setBounds (area.withTrimmedTop (74).withHeight (16));
-        slider.setVisible (true); label.setVisible (true);
-        label.setColour (juce::Label::textColourId, modularInk);
-    };
     const auto hide = [] (juce::Component& component) { component.setVisible (false); component.setBounds (0, 0, 0, 0); };
     for (auto* component : std::initializer_list<juce::Component*> {
         &performancePad, &cleanSceneButton, &wideSceneButton, &warpSceneButton, &chaosSceneButton,
@@ -2225,11 +2212,6 @@ void OneShotSamplerAudioProcessorEditor::resized()
     placeEnvelopeControl (releaseSlider, releaseLabel, envelopeControls);
 
     auto moduleControls = juce::Rectangle<int> (beta2ModuleBounds.getX() + 181, beta2ModuleBounds.getY() + 76, beta2ModuleBounds.getWidth() - 195, beta2ModuleBounds.getHeight() - 90);
-    const auto placeModuleControls = [&placeControl] (std::initializer_list<std::pair<juce::Slider*, juce::Label*>> controls, juce::Rectangle<int> area)
-    {
-        const auto width = area.getWidth() / (int) controls.size();
-        for (const auto& control : controls) placeControl (*control.first, *control.second, area.removeFromLeft (width));
-    };
     const auto placeEngineControl = [] (juce::Slider& slider, juce::Label& label, juce::Rectangle<int> area, juce::Colour labelColour, juce::Colour dialColour)
     {
         slider.setBounds (area.withTrimmedTop (0).withHeight (55));
@@ -2618,8 +2600,7 @@ void OneShotSamplerAudioProcessorEditor::timerCallback()
     // Keep phase unbounded: trigonometric functions are periodic, and never
     // wrapping this value avoids the single-frame discontinuity a modulo reset
     // can introduce in complex visuals.
-    // Preserve the same visual speed after moving from 30 to 60 fps.
-    fxVisualPhase += 0.0056f;
+    fxVisualPhase += 0.0045f;
     const auto meterTarget = juce::jlimit (0.0f, 1.0f, audioProcessor.getOutputLevel());
     // Fast attack, slow release: visual meters breathe with the audio rather
     // than flickering between host audio blocks.
@@ -2632,8 +2613,32 @@ void OneShotSamplerAudioProcessorEditor::timerCallback()
         fxCardReveal[i] += (target - fxCardReveal[i]) * 0.18f;
         fxCardPulse[i] = juce::jmax (0.0f, fxCardPulse[i] - 0.06f);
     }
-    // The sampler page also has live meters, a voice pulse and a playhead.
-    repaint();
+
+    // Repaint only the small rectangles that actually move (the same idea that
+    // keeps the performance pad smooth). Redrawing the whole 1640x720 board on
+    // every tick is what made the animations stutter.
+    auto signalMap = beta2SignalBounds.reduced (21);
+    signalMap.removeFromTop (18);
+    repaint (signalMap.reduced (1, 9).withTrimmedBottom (17));                                     // oscilloscope, meters, note strip
+    repaint (beta2ModuleBounds.getX() + 20, beta2ModuleBounds.getY() + 84,
+             beta2ModuleBounds.getWidth() - 40, beta2ModuleBounds.getHeight() - 104);                // active-module animation
+    repaint (beta2OutputBounds.getX() + 164, beta2OutputBounds.getY() + 58, 100, 38);               // safety-clip meter
+    repaint (getLocalBounds().reduced (18).removeFromBottom (30));                                  // footer readouts
+    for (size_t i = 0; i < tabEffects.size(); ++i)
+    {
+        const auto transitioning = fxCardReveal[i] > 0.01f && fxCardReveal[i] < 0.99f;
+        if (transitioning || fxCardPulse[i] > 0.0f)
+        {
+            repaint (beta2EffectTabBounds[i]);
+        }
+        else if (fxCardReveal[i] >= 0.99f)
+        {
+            auto inner = beta2EffectTabBounds[i].reduced (13);
+            inner.removeFromTop (30);
+            const auto active = selectedFx == tabEffects[i];
+            repaint (inner.removeFromTop (active ? 91 : 72).reduced (7, 6));
+        }
+    }
 }
 
 void OneShotSamplerAudioProcessorEditor::polishKnobs()
@@ -2694,6 +2699,7 @@ void OneShotSamplerAudioProcessorEditor::updateScopeAndMeters()
         shownVelocity = audioProcessor.getLastVelocity();
         if (shownNote >= 0)
             keyGlow[(size_t) (((shownNote - 60) % 24 + 24) % 24)] = 1.0f;
+        repaint (620, 18, 110, 60); // header key pill
     }
     for (auto& glow : keyGlow)
         glow = juce::jmax (0.0f, glow - 0.036f);

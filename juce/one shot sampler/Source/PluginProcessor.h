@@ -49,8 +49,6 @@ public:
     int getLastNote() const noexcept { return lastNote.load (std::memory_order_relaxed); }
     float getLastVelocity() const noexcept { return lastVelocity.load (std::memory_order_relaxed); }
     unsigned int getNoteCounter() const noexcept { return noteCounter.load (std::memory_order_relaxed); }
-    float getSampleLengthSeconds() const;
-    int getSampleChannels() const;
     int getFxSlotEffect (int slot) const;
     bool getFxSlotEnabled (int slot) const;
     void setFxSlotState (int slot, int effect, bool enabled);
@@ -94,14 +92,14 @@ private:
     juce::dsp::Phaser<float> phaser;
     juce::AudioBuffer<float> chorusBuffer, flangerBuffer, flutterBuffer;
     int chorusWritePosition = 0, flangerWritePosition = 0, flutterWritePosition = 0;
-    float chorusPhase = 0.0f, flangerPhase = 0.0f, flutterPhase = 0.0f;
+    float chorusPhase = 0.0f, flangerPhase = 0.0f;
     float flutterRandom = 0.0f, flutterRandomTarget = 0.0f;
     int flutterRandomCountdown = 0;
     std::array<float, 2> chorusFeedbackState {};
     std::array<float, 2> flangerFeedbackState {};
     juce::AudioBuffer<float> textureBuffer;
     int textureWritePosition = 0;
-    float grainReadPosition = 0.0f, harmonyReadPosition = 0.0f, randomReadPosition = 0.0f;
+    float grainReadPosition = 0.0f, randomReadPosition = 0.0f;
     float textureOrbitPhase = 0.0f;
     int grainSamplesUntilReset = 0, randomSamplesUntilReset = 0;
     juce::Random textureRandom;
@@ -115,6 +113,7 @@ private:
     std::array<std::array<float, 4>, 7> eqCache {};
     juce::SmoothedValue<float> delayMixSmooth, reverbMixSmooth, chorusMixSmooth, flangerMixSmooth, flutterMixSmooth, delayTimeSmooth;
     bool delayTimeReady = false;
+    bool delayHasContent = false;
     float flutterWowPhase = 0.0f, flutterDriftPhase = 0.0f;
     std::atomic<float> outputLevel { 0.0f };
     std::atomic<float> envelopeLevel { 0.0f };
