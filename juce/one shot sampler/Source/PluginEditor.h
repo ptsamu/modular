@@ -167,6 +167,23 @@ private:
     bool trailInitialised = false;
 };
 
+// An opaque child that draws one animated region. Drawing code keeps using
+// editor coordinates; the view just shifts the origin. Because it is opaque,
+// repainting it never triggers the editor's own paint().
+class LiveView final : public juce::Component
+{
+public:
+    LiveView() { setOpaque (true); setInterceptsMouseClicks (false, false); }
+    void paint (juce::Graphics& g) override
+    {
+        g.fillAll (background());
+        g.setOrigin (-getPosition());
+        draw (g);
+    }
+    std::function<juce::Colour()> background;
+    std::function<void (juce::Graphics&)> draw;
+};
+
 class OneShotSamplerAudioProcessorEditor final : public juce::AudioProcessorEditor,
                                                  public juce::FileDragAndDropTarget,
                                                  public juce::DragAndDropContainer,
@@ -201,6 +218,20 @@ private:
     void rebuildBeta2DotLayers();
     void polishKnobs();
     void updateScopeAndMeters();
+    juce::Rectangle<int> scopeRect() const;
+    juce::Rectangle<int> moduleVisualRect() const;
+    juce::Rectangle<int> footerRect() const;
+    juce::Rectangle<int> limiterRect() const;
+    juce::Rectangle<int> cardVisualRect (size_t i) const;
+    void drawScopeLive (juce::Graphics&);
+    void drawModuleLive (juce::Graphics&);
+    void drawFooterLive (juce::Graphics&);
+    void drawLimiterLive (juce::Graphics&);
+    void drawCardLive (juce::Graphics&, size_t i);
+    void layoutLiveViews();
+    void setupLiveViews();
+    LiveView scopeView, moduleView, footerView, limiterView;
+    std::array<LiveView, 5> cardViews;
     void timerCallback() override;
 
     OneShotSamplerAudioProcessor& audioProcessor;
