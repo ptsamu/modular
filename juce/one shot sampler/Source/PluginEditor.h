@@ -51,6 +51,7 @@ class EnvelopePad final : public juce::Component,
 {
 public:
     EnvelopePad (juce::AudioProcessorValueTreeState& state, OneShotSamplerAudioProcessor& processor);
+    void setLayer (int layer) { selectedLayer = layer; draggedHandle = -1; repaint(); }
 
     void paint (juce::Graphics&) override;
     void mouseDown (const juce::MouseEvent&) override;
@@ -64,7 +65,7 @@ private:
 
     juce::AudioProcessorValueTreeState& parameters;
     OneShotSamplerAudioProcessor& audioProcessor;
-    int draggedHandle = -1;
+    int draggedHandle = -1, selectedLayer = 0;
     float animationPhase = 0.0f;
 };
 
@@ -141,26 +142,8 @@ private:
 
 // A hands-on macro surface for Beta 2. It is deliberately independent from
 // the audio graph: the editor maps its X/Y position to safe parameter ranges.
-class PerformancePad final : public juce::Component, private juce::Timer
-{
-public:
-    PerformancePad();
-    void setPosition (float newX, float newY, bool notify = false);
-    void paint (juce::Graphics&) override;
-    void mouseDown (const juce::MouseEvent&) override;
-    void mouseDrag (const juce::MouseEvent&) override;
-
-    std::function<void (float, float)> onPositionChanged;
-
-private:
-    void updateFromPointer (juce::Point<float> point);
-    void timerCallback() override;
-    float positionX = 0.32f;
-    float positionY = 0.42f;
-    float targetX = 0.32f;
-    float targetY = 0.42f;
-    float animationPhase = 0.0f;
-};
+class SourceDeck;
+class SourceRoute;
 
 // An opaque child that draws one animated region. Drawing code keeps using
 // editor coordinates; the view just shifts the origin. Because it is opaque,
@@ -180,7 +163,6 @@ public:
 };
 
 class OneShotSamplerAudioProcessorEditor final : public juce::AudioProcessorEditor,
-                                                 public juce::FileDragAndDropTarget,
                                                  public juce::DragAndDropContainer,
                                                  public juce::DragAndDropTarget,
                                                  private juce::Timer
@@ -191,8 +173,6 @@ public:
 
     void paint (juce::Graphics&) override;
     void resized() override;
-    bool isInterestedInFileDrag (const juce::StringArray& files) override;
-    void filesDropped (const juce::StringArray& files, int x, int y) override;
     bool isInterestedInDragSource (const SourceDetails&) override;
     void itemDropped (const SourceDetails&) override;
     void mouseDown (const juce::MouseEvent&) override;
@@ -208,8 +188,6 @@ private:
     void removeEffectFromSlot (int slot);
     void setSlotEnabled (int slot, bool shouldBeEnabled);
     void refreshEffectEnableStates();
-    void setPerformancePosition (float x, float y);
-    void applyPerformanceScene (int scene);
     void polishKnobs();
     void updateScopeAndMeters();
     juce::Rectangle<int> scopeRect() const;
@@ -232,9 +210,12 @@ private:
     FrameworksLookAndFeel frameworksLookAndFeel;
     TextureLookAndFeel textureLookAndFeel;
     EnvelopePad envelopePad;
+    std::array<std::unique_ptr<juce::Button>, 2> envelopeTabs;
+    void setEnvelopeLayer (int layer);
     EqCurvePad eqCurvePad;
     PresetSelector presetSelector;
-    PerformancePad performancePad;
+    std::array<std::unique_ptr<SourceDeck>, 2> sourceDecks;
+    std::array<std::unique_ptr<SourceRoute>, 5> sourceRoutes;
     juce::Slider outputGainSlider;
     juce::Label outputGainLabel;
     juce::Slider attackSlider, decaySlider, sustainSlider, releaseSlider;
@@ -261,11 +242,8 @@ private:
     juce::TextButton granularTextureTab { "GRANULAR" }, harmonyTextureTab { "ORBIT" }, randomTextureTab { "RANDOM" };
     juce::ComboBox delayPreset, reverbPreset, chorusPreset, phaserPreset, flangerPreset, flutterPreset, granularPreset, harmonyPreset, randomPreset;
     juce::ComboBox eqPreset;
-    juce::TextButton loadButton { "LOAD SAMPLE" };
-    juce::TextButton cleanSceneButton { "CLEAN" }, wideSceneButton { "WIDE" }, warpSceneButton { "WARP" }, chaosSceneButton { "CHAOS" };
     FxSlotButton fxSlotOne { 0 }, fxSlotTwo { 1 }, fxSlotThree { 2 }, fxSlotFour { 3 }, fxSlotFive { 4 }, fxSlotSix { 5 }, fxSlotSeven { 6 };
     juce::TextButton fxSlotToggleOne { "OFF" }, fxSlotToggleTwo { "OFF" }, fxSlotToggleThree { "OFF" }, fxSlotToggleFour { "OFF" }, fxSlotToggleFive { "OFF" }, fxSlotToggleSix { "OFF" }, fxSlotToggleSeven { "OFF" };
-    juce::Label sampleLabel;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> outputGainAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> attackAttachment, decayAttachment, sustainAttachment, releaseAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> delayTimeAttachment, delayFeedbackAttachment, delayMixAttachment, reverbMixAttachment, reverbRoomSizeAttachment, reverbDampingAttachment, reverbWidthAttachment, reverbFreezeAttachment;
@@ -279,7 +257,6 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> eqEnabledAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> flutterEnabledAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> granularEnabledAttachment, harmonyEnabledAttachment, randomEnabledAttachment;
-    std::unique_ptr<juce::FileChooser> fileChooser;
     int textureEngine = 0;
     // The rack is a fixed seven-effect instrument panel. It always opens with
     // every module visible, while every module remains off until enabled.
@@ -289,18 +266,23 @@ private:
     std::unique_ptr<EffectPatchMenu> effectPickerMenu;
     int effectPickerSlot = -1;
     float fxVisualPhase = 0.0f;
-    int activePerformanceScene = 0;
     // Per-card presentation state. These only affect the UI, never DSP or
     // routing, so activation remains immediate and automation-safe.
     std::array<bool, 5> lastCardEnabled {};
     double lastVisualTime = 0.0, visualSeconds = 0.0;
     unsigned int meterTick = 0;
-    std::array<float, 5> fxCardPulse {};
     // Meter smoothing belongs on the UI thread. It makes signal-reactive
     // motion feel musical while keeping the processor lock-free.
     float visualSignalLevel = 0.0f;
     // Note-reactive oscilloscope, stereo meters and key display (UI thread only).
-    static constexpr int scopeReadSamples = 2048;
+    static constexpr int spectrumOrder = 12;
+    static constexpr int scopeReadSamples = 1 << spectrumOrder;
+    static constexpr int spectrumColumns = 180, spectrumRows = 80;
+    juce::dsp::FFT spectrumFFT { spectrumOrder };
+    juce::dsp::WindowingFunction<float> spectrumWindow { scopeReadSamples, juce::dsp::WindowingFunction<float>::hann, false };
+    std::array<float, scopeReadSamples * 2> spectrumWork {};
+    juce::Image spectrumHistory { juce::Image::RGB, spectrumColumns, spectrumRows, true };
+    int spectrumWriteColumn = 0;
     static constexpr int scopeWindowSamples = 720;
     std::array<float, scopeReadSamples> scopeCopy {};
     juce::Path scopeTrace, scopeGhost;
@@ -319,7 +301,6 @@ private:
     // chain and the actual editor selection in lock-step.
     juce::Rectangle<int> beta2SourceBounds, beta2ModuleBounds, beta2SignalBounds;
     juce::Rectangle<int> beta2EnvelopeBounds, beta2OutputBounds, beta2ChainBounds;
-    std::array<juce::Rectangle<int>, 4> beta2SceneBounds;
     juce::Rectangle<int> beta2PresetBounds;
     std::array<juce::Rectangle<int>, 5> beta2EffectTabBounds;
 
