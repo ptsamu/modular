@@ -124,7 +124,6 @@ private:
     static juce::String presetIdFor (int effect, int preset);
     static juce::String presetMetaFor (int effect, int preset);
     static int effectForFilterIndex (int index);
-    static int filterIndexForEffect (int effect);
     juce::Rectangle<int> pillBounds() const;
     juce::Rectangle<int> stepBounds (int index) const;
     juce::Rectangle<int> menuBounds() const;
@@ -156,15 +155,11 @@ public:
 private:
     void updateFromPointer (juce::Point<float> point);
     void timerCallback() override;
-    void pushTrailPoint();
     float positionX = 0.32f;
     float positionY = 0.42f;
     float targetX = 0.32f;
     float targetY = 0.42f;
     float animationPhase = 0.0f;
-    std::array<juce::Point<float>, 32> trail {};
-    int trailHead = 0;
-    bool trailInitialised = false;
 };
 
 // An opaque child that draws one animated region. Drawing code keeps using
@@ -215,7 +210,6 @@ private:
     void refreshEffectEnableStates();
     void setPerformancePosition (float x, float y);
     void applyPerformanceScene (int scene);
-    void rebuildBeta2DotLayers();
     void polishKnobs();
     void updateScopeAndMeters();
     juce::Rectangle<int> scopeRect() const;
@@ -286,8 +280,6 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> flutterEnabledAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> granularEnabledAttachment, harmonyEnabledAttachment, randomEnabledAttachment;
     std::unique_ptr<juce::FileChooser> fileChooser;
-    bool showingFx = false;
-    bool showingTexture = false;
     int textureEngine = 0;
     // The rack is a fixed seven-effect instrument panel. It always opens with
     // every module visible, while every module remains off until enabled.
@@ -300,7 +292,9 @@ private:
     int activePerformanceScene = 0;
     // Per-card presentation state. These only affect the UI, never DSP or
     // routing, so activation remains immediate and automation-safe.
-    std::array<float, 5> fxCardReveal {};
+    std::array<bool, 5> lastCardEnabled {};
+    double lastVisualTime = 0.0, visualSeconds = 0.0;
+    unsigned int meterTick = 0;
     std::array<float, 5> fxCardPulse {};
     // Meter smoothing belongs on the UI thread. It makes signal-reactive
     // motion feel musical while keeping the processor lock-free.
@@ -318,14 +312,9 @@ private:
     unsigned int seenNoteCounter = 0;
     int shownNote = -1;
     float shownVelocity = 0.0f;
-    juce::Image modularBadge;
-    juce::Image darkFrameworksMark;
-    juce::Image frameworksHalftoneMark;
     juce::Image modularWordmark;
     // Static pegboard layers are rasterised once when the fixed Beta 2 board
     // lays out. The live paint path only has to draw motion and controls.
-    juce::Image beta2CanvasDotLayer;
-    juce::Image beta2PanelDotLayer;
     // Beta 2 is a single processing board.  These hit areas keep the visual
     // chain and the actual editor selection in lock-step.
     juce::Rectangle<int> beta2SourceBounds, beta2ModuleBounds, beta2SignalBounds;

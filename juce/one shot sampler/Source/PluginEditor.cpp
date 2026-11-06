@@ -8,7 +8,7 @@ namespace
     // Every knob caption in the plugin uses this one font.
     juce::Font knobCaptionFont()
     {
-        juce::Font font ("Helvetica", 8.5f, juce::Font::bold);
+        juce::Font font ("Helvetica", 7.5f, juce::Font::plain);
         font.setExtraKerningFactor (0.05f);
         return font;
     }
@@ -345,7 +345,7 @@ void FrameworksLookAndFeel::drawLabel (juce::Graphics& g, juce::Label& label)
         // ADSR and master controls consistent with the new engine cards.
         g.setColour (label.findColour (juce::Label::textColourId));
         // One readout size for every knob, so no value looks bigger than another.
-        g.setFont (juce::Font ("Helvetica", 10.0f, juce::Font::plain));
+        g.setFont (juce::Font ("Helvetica", 8.5f, juce::Font::plain));
         g.drawFittedText (label.getText(), label.getLocalBounds(), juce::Justification::centred, 1, 0.7f);
         return;
     }
@@ -778,14 +778,6 @@ int PresetSelector::effectForFilterIndex (int index)
     return effects[(size_t) juce::jlimit (0, 4, index)];
 }
 
-int PresetSelector::filterIndexForEffect (int effect)
-{
-    for (int index = 0; index < 5; ++index)
-        if (effectForFilterIndex (index) == effect)
-            return index;
-    return 0;
-}
-
 juce::Rectangle<int> PresetSelector::pillBounds() const
 {
     // The pill leaves room on the right for the previous / next circles.
@@ -911,7 +903,7 @@ void PresetSelector::paint (juce::Graphics& g)
         return;
 
     const auto menu = menuBounds().toFloat();
-    g.setColour (blue); g.fillRoundedRectangle (menu, 14.0f);
+    g.setColour (blue); g.fillRect (menu);
     g.setColour (ink); g.drawRoundedRectangle (menu.reduced (0.5f), 14.0f, 1.0f);
 
     for (int index = 0; index < 5; ++index)
@@ -1032,22 +1024,8 @@ void PresetSelector::mouseExit (const juce::MouseEvent&)
 
 PerformancePad::PerformancePad()
 {
-    for (auto& point : trail)
-        point = { positionX, positionY };
-    trailInitialised = true;
+    setOpaque (true);
     startTimerHz (30);
-}
-
-void PerformancePad::pushTrailPoint()
-{
-    if (! trailInitialised)
-    {
-        for (auto& point : trail)
-            point = { positionX, positionY };
-        trailInitialised = true;
-    }
-    trail[(size_t) trailHead] = { positionX, positionY };
-    trailHead = (trailHead + 1) % (int) trail.size();
 }
 
 void PerformancePad::setPosition (float newX, float newY, bool notify)
@@ -1058,7 +1036,6 @@ void PerformancePad::setPosition (float newX, float newY, bool notify)
     {
         positionX = targetX;
         positionY = targetY;
-        pushTrailPoint();
         if (onPositionChanged)
             onPositionChanged (positionX, positionY);
     }
@@ -1074,7 +1051,6 @@ void PerformancePad::timerCallback()
     {
         positionX += dx * 0.16f;
         positionY += dy * 0.16f;
-        pushTrailPoint();
     }
     else
     {
@@ -1097,6 +1073,7 @@ void PerformancePad::mouseDrag (const juce::MouseEvent& event) { updateFromPoint
 
 void PerformancePad::paint (juce::Graphics& g)
 {
+    g.fillAll (modularBlue);
     const auto blue = modularBlue;
     const auto white = modularInk;
     const auto bounds = getLocalBounds().toFloat().reduced (1.0f);
@@ -1172,12 +1149,6 @@ OneShotSamplerAudioProcessorEditor::OneShotSamplerAudioProcessorEditor (OneShotS
 {
     setupLiveViews();
     int badgeDataSize = 0;
-    if (const auto* badgeData = BinaryData::getNamedResource ("modulartop_png", badgeDataSize))
-        modularBadge = juce::ImageFileFormat::loadFrom (badgeData, (size_t) badgeDataSize);
-    if (const auto* markData = BinaryData::getNamedResource ("fmwnobgdarkgray_png", badgeDataSize))
-        darkFrameworksMark = juce::ImageFileFormat::loadFrom (markData, (size_t) badgeDataSize);
-    if (const auto* halftoneData = BinaryData::getNamedResource ("frameworkshalftone3000_png", badgeDataSize))
-        frameworksHalftoneMark = juce::ImageFileFormat::loadFrom (halftoneData, (size_t) badgeDataSize);
     if (const auto* wordmarkData = BinaryData::getNamedResource ("modularwordmark_png", badgeDataSize))
         modularWordmark = juce::ImageFileFormat::loadFrom (wordmarkData, (size_t) badgeDataSize);
     const auto setupControl = [this] (juce::Slider& slider, juce::Label& label, const juce::String& text)
@@ -1433,6 +1404,7 @@ OneShotSamplerAudioProcessorEditor::OneShotSamplerAudioProcessorEditor (OneShotS
         source->setSelectedId (preset + 1, juce::sendNotificationSync);
         selectEffect (effect);
     };
+    presetSelector.setAlwaysOnTop (true);
     addAndMakeVisible (presetSelector);
 
     for (auto* slot : { &fxSlotOne, &fxSlotTwo, &fxSlotThree, &fxSlotFour, &fxSlotFive, &fxSlotSix, &fxSlotSeven })
@@ -1552,8 +1524,7 @@ OneShotSamplerAudioProcessorEditor::OneShotSamplerAudioProcessorEditor (OneShotS
     setSize (1640, 720);
     setResizable (false, false);
     polishKnobs();
-    // 30 fps is plenty for these slow visuals and keeps the host UI responsive.
-    startTimerHz (30);
+    startTimerHz (60);
 }
 
 OneShotSamplerAudioProcessorEditor::~OneShotSamplerAudioProcessorEditor()
@@ -1706,18 +1677,13 @@ void OneShotSamplerAudioProcessorEditor::paint (juce::Graphics& g)
         const auto tab = beta2EffectTabBounds[i];
         const auto enabled = isEffectEnabled (tabEffects[i]);
         const auto active = enabled && selectedFx == tabEffects[i];
-        const auto reveal = fxCardReveal[i];
-        const auto pulse = fxCardPulse[i];
         const auto card = tab.toFloat();
-        // Disabled cards rest quieter; enabled and hovered cards come to full ink.
-        // On and off read from the card's fill: a switched-off card sits in a
-        // deeper blue while keeping full-strength ink, so nothing looks faded.
         const auto cardInk = ink;
-        g.setColour (blue.interpolatedWith (juce::Colour (0xff0050c0), 1.0f - juce::jlimit (0.0f, 1.0f, reveal)));
-        g.fillRoundedRectangle (card.reduced (1.0f), 16.0f);
-
         g.setColour (cardInk);
-        g.drawRoundedRectangle (card.reduced (1.0f), 16.0f, (active ? 2.0f : 1.0f) + pulse * 1.2f);
+        g.drawRoundedRectangle (card.reduced (1.0f), 16.0f, active ? 2.0f : 1.0f);
+        const juce::Rectangle<float> indicator (card.getX() + 13.0f, card.getY() + 24.0f, 5.0f, 5.0f);
+        if (enabled) g.fillEllipse (indicator);
+        else         g.drawEllipse (indicator, 1.0f);
 
         auto inner = tab.reduced (13);
         auto title = inner.removeFromTop (30);
@@ -1738,52 +1704,55 @@ void OneShotSamplerAudioProcessorEditor::paint (juce::Graphics& g)
         }
     }
 
-    // Source / 01: the loaded sample as one thin line.
-    auto sourceInner = beta2SourceBounds.reduced (20);
-    g.setColour (ink); g.setFont (font (10.0f)); g.drawText ("Source / 01", sourceInner.removeFromTop (18), juce::Justification::centredLeft);
-    auto sourceWave = sourceInner.withTrimmedTop (174).withTrimmedBottom (56);
-    g.setColour (ink);
-    g.setFont (font (30.0f));
-    const auto sourceName = audioProcessor.hasLoadedSample() ? audioProcessor.getSampleName().upToFirstOccurrenceOf (".", false, false) : "Nocturne\nOne shot";
-    g.drawFittedText (sourceName, sourceInner.withTrimmedTop (38).withHeight (62), juce::Justification::centredLeft, 2);
-    g.setFont (font (10.0f)); g.setColour (ink.withAlpha (0.85f));
-    const auto metadata = audioProcessor.hasLoadedSample()
-        ? audioProcessor.getSampleName() + "  /  " + juce::String ((int) audioProcessor.getSampleRate()) + " Hz"
-        : "Source ready  /  44.1 kHz  /  24 bit";
-    g.drawText (metadata, sourceInner.withTrimmedTop (117).withHeight (16), juce::Justification::centredLeft);
+    if (g.clipRegionIntersects (beta2SourceBounds))
+    {
+        // Source / 01: the loaded sample as one thin line.
+        auto sourceInner = beta2SourceBounds.reduced (20);
+        g.setColour (ink); g.setFont (font (10.0f)); g.drawText ("Source / 01", sourceInner.removeFromTop (18), juce::Justification::centredLeft);
+        auto sourceWave = sourceInner.withTrimmedTop (174).withTrimmedBottom (56);
+        g.setColour (ink);
+        g.setFont (font (30.0f));
+        const auto sourceName = audioProcessor.hasLoadedSample() ? audioProcessor.getSampleName().upToFirstOccurrenceOf (".", false, false) : "Nocturne\nOne shot";
+        g.drawFittedText (sourceName, sourceInner.withTrimmedTop (38).withHeight (62), juce::Justification::centredLeft, 2);
+        g.setFont (font (10.0f)); g.setColour (ink.withAlpha (0.85f));
+        const auto metadata = audioProcessor.hasLoadedSample()
+            ? audioProcessor.getSampleName() + "  /  " + juce::String ((int) audioProcessor.getSampleRate()) + " Hz"
+            : "Source ready  /  44.1 kHz  /  24 bit";
+        g.drawText (metadata, sourceInner.withTrimmedTop (117).withHeight (16), juce::Justification::centredLeft);
 
-    // Centre axis, then a single connected line that swings between the upper
-    // and lower peak of each slice of the sample.
-    g.setColour (ink.withAlpha (0.35f));
-    g.drawHorizontalLine (sourceWave.getCentreY(), (float) sourceWave.getX(), (float) sourceWave.getRight());
-    juce::Path trace;
-    if (audioProcessor.hasLoadedSample())
-    {
-        const auto peaks = audioProcessor.getWaveformPeaks (juce::jmax (24, sourceWave.getWidth() / 3));
-        const auto centreY = (float) sourceWave.getCentreY();
-        for (size_t i = 0; i < peaks.size(); ++i)
+        // Centre axis, then a single connected line that swings between the upper
+        // and lower peak of each slice of the sample.
+        g.setColour (ink.withAlpha (0.35f));
+        g.drawHorizontalLine (sourceWave.getCentreY(), (float) sourceWave.getX(), (float) sourceWave.getRight());
+        juce::Path trace;
+        if (audioProcessor.hasLoadedSample())
         {
-            const auto divisor = peaks.size() > 1 ? peaks.size() - 1 : (size_t) 1;
-            const auto x = (float) sourceWave.getX() + (float) i * (float) sourceWave.getWidth() / (float) divisor;
-            const auto height = peaks[i] * sourceWave.getHeight() * 0.44f;
-            const auto y = centreY + (i % 2 == 0 ? -height : height);
-            if (i == 0) trace.startNewSubPath (x, y); else trace.lineTo (x, y);
+            const auto peaks = audioProcessor.getWaveformPeaks (juce::jmax (24, sourceWave.getWidth() / 3));
+            const auto centreY = (float) sourceWave.getCentreY();
+            for (size_t i = 0; i < peaks.size(); ++i)
+            {
+                const auto divisor = peaks.size() > 1 ? peaks.size() - 1 : (size_t) 1;
+                const auto x = (float) sourceWave.getX() + (float) i * (float) sourceWave.getWidth() / (float) divisor;
+                const auto height = peaks[i] * sourceWave.getHeight() * 0.44f;
+                const auto y = centreY + (i % 2 == 0 ? -height : height);
+                if (i == 0) trace.startNewSubPath (x, y); else trace.lineTo (x, y);
+            }
         }
-    }
-    else
-    {
-        constexpr int points = 64;
-        for (int i = 0; i <= points; ++i)
+        else
         {
-            const auto t = (float) i / (float) points;
-            const auto amplitude = (float) sourceWave.getHeight() * 0.44f * std::exp (-3.2f * t);
-            const auto x = (float) sourceWave.getX() + t * (float) sourceWave.getWidth();
-            const auto y = (float) sourceWave.getCentreY() + (i % 2 == 0 ? -amplitude : amplitude);
-            if (i == 0) trace.startNewSubPath (x, y); else trace.lineTo (x, y);
+            constexpr int points = 64;
+            for (int i = 0; i <= points; ++i)
+            {
+                const auto t = (float) i / (float) points;
+                const auto amplitude = (float) sourceWave.getHeight() * 0.44f * std::exp (-3.2f * t);
+                const auto x = (float) sourceWave.getX() + t * (float) sourceWave.getWidth();
+                const auto y = (float) sourceWave.getCentreY() + (i % 2 == 0 ? -amplitude : amplitude);
+                if (i == 0) trace.startNewSubPath (x, y); else trace.lineTo (x, y);
+            }
         }
+        g.setColour (ink);
+        g.strokePath (trace, juce::PathStrokeType (1.0f, juce::PathStrokeType::mitered, juce::PathStrokeType::butt));
     }
-    g.setColour (ink);
-    g.strokePath (trace, juce::PathStrokeType (1.0f, juce::PathStrokeType::mitered, juce::PathStrokeType::butt));
 
     // Signal Map: a wireframe oscilloscope - inspired by early digital audio
     // terminals, but driven by Modular's live output level.
@@ -1856,7 +1825,6 @@ void OneShotSamplerAudioProcessorEditor::drawCardLive (juce::Graphics& g, size_t
     [[maybe_unused]] const auto motion = fxVisualPhase * juce::MathConstants<float>::twoPi;
     juce::ignoreUnused (blue, ink);
     const auto enabled = isEffectEnabled (cardEffects[i]);
-    const auto hovered = beta2EffectTabBounds[i].contains (getMouseXYRelative());
     const auto pulse = fxCardPulse[i];
     const auto cardInk = ink;
     const auto visual = cardVisualRect (i);
@@ -1867,14 +1835,14 @@ void OneShotSamplerAudioProcessorEditor::drawCardLive (juce::Graphics& g, size_t
         // All card loops are sine-based and phase-continuous. There is no
         // reset frame or coordinate wrap, so they can run indefinitely with
         // no visual "click" at the end of a cycle.
-        const auto visualMotion = motion * (enabled ? (hovered ? 1.24f : 0.86f) : 0.22f);
+        const auto visualMotion = enabled ? motion : 0.0f;
         // Audio energy controls the scale of every engine's motion. The
         // underlying phase remains continuous, but the board visibly wakes
         // up when the instrument is actually producing sound.
         const auto signalResponse = 0.26f + visualSignalLevel * 0.74f;
         if (i == 0) // space: source, expanding rings, wall reflections
         {
-            drawSpaceRoom (g, visual.toFloat().reduced (3.0f), (float) (juce::Time::getMillisecondCounterHiRes() * 0.001) * (enabled ? 1.0f : 0.45f),
+            drawSpaceRoom (g, visual.toFloat().reduced (3.0f), enabled ? (float) visualSeconds : 0.0f,
                            visualSignalLevel, cardInk);
         }
         else if (i == 1) // grain field
@@ -2092,7 +2060,7 @@ void OneShotSamplerAudioProcessorEditor::drawModuleLive (juce::Graphics& g)
         {
             // Detune field: four copies of one wave, each drifting slightly apart.
             const auto field = moduleVisual.reduced (12).toFloat();
-            const auto time = (float) (juce::Time::getMillisecondCounterHiRes() * 0.001);
+            const auto time = (float) visualSeconds;
             for (int voice = 0; voice < 4; ++voice)
             {
                 juce::Path wave;
@@ -2110,16 +2078,23 @@ void OneShotSamplerAudioProcessorEditor::drawModuleLive (juce::Graphics& g)
         }
         else if (selectedFx == 9)
         {
-            // Chance field: a stepped sample-and-hold line that jumps to a new
-            // random level every beat of its clock.
+            // Ease between successive deterministic chance states.
             const auto field = moduleVisual.reduced (12).toFloat();
-            const auto tick = (int) std::floor (juce::Time::getMillisecondCounterHiRes() * 0.0035);
+            const auto clock = visualSeconds * 3.5;
+            const auto tick = (unsigned int) clock;
+            const auto fraction = (float) (clock - tick);
+            const auto blend = fraction * fraction * (3.0f - 2.0f * fraction);
             constexpr int stepsAcross = 14;
             juce::Path steps;
             for (int step = 0; step < stepsAcross; ++step)
             {
-                const auto seed = (unsigned int) (tick + step) * 2654435761u;
-                const auto value = (float) ((seed >> 8) & 1023) / 1023.0f;
+                const auto levelAt = [](unsigned int index)
+                {
+                    const auto seed = index * 2654435761u;
+                    return (float) ((seed >> 8) & 1023) / 1023.0f;
+                };
+                const auto first = levelAt (tick + (unsigned int) step);
+                const auto value = first + blend * (levelAt (tick + (unsigned int) step + 1u) - first);
                 const auto x0 = field.getX() + field.getWidth() * (float) step / (float) stepsAcross;
                 const auto x1 = field.getX() + field.getWidth() * (float) (step + 1) / (float) stepsAcross;
                 const auto y = field.getBottom() - value * field.getHeight();
@@ -2131,7 +2106,7 @@ void OneShotSamplerAudioProcessorEditor::drawModuleLive (juce::Graphics& g)
         }
         else if (selectedFx == 1)
         {
-            drawSpaceRoom (g, moduleVisual.toFloat().reduced (10.0f), (float) (juce::Time::getMillisecondCounterHiRes() * 0.001), visualSignalLevel, ink);
+            drawSpaceRoom (g, moduleVisual.toFloat().reduced (10.0f), (float) visualSeconds, visualSignalLevel, ink);
         }
         else
         {
@@ -2187,15 +2162,8 @@ void OneShotSamplerAudioProcessorEditor::setupLiveViews()
     add (footerView, [blue] { return blue; }, [this] (juce::Graphics& g) { drawFooterLive (g); });
     add (limiterView, [blue] { return blue; }, [this] (juce::Graphics& g) { drawLimiterLive (g); });
     for (size_t i = 0; i < cardViews.size(); ++i)
-        add (cardViews[i], [this, i] { return modularBlue.interpolatedWith (juce::Colour (0xff0050c0), 1.0f - juce::jlimit (0.0f, 1.0f, fxCardReveal[i])); },
+        add (cardViews[i], [blue] { return blue; },
              [this, i] (juce::Graphics& g) { drawCardLive (g, i); });
-}
-
-void OneShotSamplerAudioProcessorEditor::rebuildBeta2DotLayers()
-{
-    // The line design is completely flat: no dotted pegboard layers.
-    beta2CanvasDotLayer = {};
-    beta2PanelDotLayer = {};
 }
 
 void OneShotSamplerAudioProcessorEditor::resized()
@@ -2413,95 +2381,20 @@ void OneShotSamplerAudioProcessorEditor::resized()
         showHeaderPreset (1, reverbPreset);
     }
 
-    rebuildBeta2DotLayers();
     polishKnobs();
     layoutLiveViews();
 }
-void OneShotSamplerAudioProcessorEditor::showFxPage (bool shouldShowFx)
+void OneShotSamplerAudioProcessorEditor::showFxPage (bool)
 {
-    // Beta 2 is one board.  The legacy header buttons now simply return to
-    // this surface, so reopening an editor can never expose an old layer.
-    juce::ignoreUnused (shouldShowFx);
-    showingFx = false;
-    showingTexture = false;
     if (effectPickerMenu != nullptr)
         effectPickerMenu->setVisible (false);
     resized();
-    repaint();
-    return;
-
-    // The picker only opens from the add card. It is never part of the FX
-    // page's resting layout, so it cannot cover the editor after a tab change.
-    if (effectPickerMenu != nullptr)
-        effectPickerMenu->setVisible (false);
-
-    showingFx = shouldShowFx;
-    showingTexture = false;
-    granularTextureTab.setVisible (false); harmonyTextureTab.setVisible (false); randomTextureTab.setVisible (false);
-    samplerTab.setColour (juce::TextButton::buttonColourId, shouldShowFx ? juce::Colour (0xff292929) : juce::Colour (0xffeb6c2a));
-    samplerTab.setColour (juce::TextButton::textColourOffId, juce::Colour (0xffeb6c2a));
-    fxTab.setColour (juce::TextButton::buttonColourId, shouldShowFx ? juce::Colour (0xffeb6c2a) : juce::Colour (0xff292929));
-    fxTab.setColour (juce::TextButton::textColourOffId, juce::Colour (0xffeb6c2a));
-
-    sampleLabel.setVisible (false);
-    for (juce::Component* component : std::initializer_list<juce::Component*> { &loadButton, &envelopePad, &outputGainSlider, &outputGainLabel,
-                                                                                   &attackSlider, &attackLabel, &decaySlider, &decayLabel, &sustainSlider, &sustainLabel, &releaseSlider, &releaseLabel, &eqCurvePad })
-        component->setVisible (! shouldShowFx);
-    for (juce::Component* component : std::initializer_list<juce::Component*> { &delayTimeSlider, &delayTimeLabel, &delayFeedbackSlider, &delayFeedbackLabel,
-                                                                                   &delayMixSlider, &delayMixLabel, &reverbMixSlider, &reverbMixLabel, &reverbRoomSizeSlider, &reverbRoomSizeLabel,
-                                                                                   &reverbDampingSlider, &reverbDampingLabel, &reverbWidthSlider, &reverbWidthLabel, &reverbFreezeSlider, &reverbFreezeLabel, &chorusRateSlider, &chorusRateLabel,
-                                                                                   &chorusDepthSlider, &chorusDepthLabel, &chorusDelaySlider, &chorusDelayLabel, &chorusFeedbackSlider, &chorusFeedbackLabel,
-                                                                                   &chorusMixSlider, &chorusMixLabel, &phaserRateSlider, &phaserRateLabel, &phaserDepthSlider, &phaserDepthLabel,
-                                                                                   &phaserFeedbackSlider, &phaserFeedbackLabel, &phaserMixSlider, &phaserMixLabel, &delayPreset, &reverbPreset, &chorusPreset, &phaserPreset, &eqPreset })
-        component->setVisible (false);
-    for (juce::Component* component : std::initializer_list<juce::Component*> { &flangerRateSlider, &flangerRateLabel, &flangerDepthSlider, &flangerDepthLabel,
-                                                                                   &flangerDelaySlider, &flangerDelayLabel, &flangerFeedbackSlider, &flangerFeedbackLabel,
-                                                                                   &flangerMixSlider, &flangerMixLabel, &flangerPreset, &flutterRateSlider, &flutterRateLabel, &flutterDepthSlider, &flutterDepthLabel, &flutterDelaySlider, &flutterDelayLabel, &flutterMixSlider, &flutterMixLabel, &flutterPreset, &eqLowSlider, &eqLowLabel, &eqMidSlider, &eqMidLabel, &eqHighSlider, &eqHighLabel })
-        component->setVisible (false);
-    for (juce::Component* component : std::initializer_list<juce::Component*> { &delayEnabledButton, &reverbEnabledButton, &chorusEnabledButton, &phaserEnabledButton, &flangerEnabledButton, &eqEnabledButton, &flutterEnabledButton })
-        component->setVisible (false);
-    for (juce::Component* component : std::initializer_list<juce::Component*> { &granularSizeSlider, &granularSizeLabel, &granularDensitySlider, &granularDensityLabel, &granularPitchSlider, &granularPitchLabel, &granularMixSlider, &granularMixLabel, &granularPreset, &granularEnabledButton, &harmonyShiftSlider, &harmonyShiftLabel, &harmonyDetuneSlider, &harmonyDetuneLabel, &harmonyMixSlider, &harmonyMixLabel, &harmonyPreset, &harmonyEnabledButton, &randomAmountSlider, &randomAmountLabel, &randomRateSlider, &randomRateLabel, &randomMixSlider, &randomMixLabel, &randomPreset, &randomEnabledButton })
-        component->setVisible (false);
-    for (juce::Component* slot : std::array<juce::Component*, 14> { &fxSlotOne, &fxSlotTwo, &fxSlotThree, &fxSlotFour, &fxSlotFive, &fxSlotSix, &fxSlotSeven,
-                        &fxSlotToggleOne, &fxSlotToggleTwo, &fxSlotToggleThree, &fxSlotToggleFour, &fxSlotToggleFive, &fxSlotToggleSix, &fxSlotToggleSeven })
-        slot->setVisible (shouldShowFx);
-    for (juce::Label* label : std::initializer_list<juce::Label*> { &delayTimeLabel, &delayFeedbackLabel, &delayMixLabel, &reverbMixLabel,
-                                                                       &reverbRoomSizeLabel, &reverbDampingLabel, &reverbWidthLabel, &reverbFreezeLabel,
-                                                                       &chorusRateLabel, &chorusDepthLabel, &chorusDelayLabel, &chorusFeedbackLabel, &chorusMixLabel,
-                                                                       &phaserRateLabel, &phaserDepthLabel, &phaserFeedbackLabel, &phaserMixLabel,
-                                                                       &flangerRateLabel, &flangerDepthLabel, &flangerDelayLabel, &flangerFeedbackLabel, &flangerMixLabel, &eqLowLabel, &eqMidLabel, &eqHighLabel })
-        label->setColour (juce::Label::textColourId, juce::Colour (0xff171717));
-    resized();
-    // The EQ editor is a custom component, so keep an explicit final guard
-    // when returning to Sampler. This prevents it surviving a tab repaint.
-    if (! shouldShowFx)
-    {
-        eqCurvePad.setVisible (false);
-        eqPreset.setVisible (false);
-    }
     repaint();
 }
 
 void OneShotSamplerAudioProcessorEditor::showTexturePage()
 {
     showFxPage (false);
-    return;
-
-    // Reuse the sampler reset path first so nothing from the rack can leak
-    // into the dedicated Texture Lab surface.
-    showFxPage (false);
-    showingTexture = true;
-    samplerTab.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff292929));
-    fxTab.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff292929));
-    textureTab.setColour (juce::TextButton::buttonColourId, juce::Colour (0xffeb6c2a));
-    for (juce::Component* component : std::initializer_list<juce::Component*> { &loadButton, &envelopePad, &outputGainSlider, &outputGainLabel, &attackSlider, &attackLabel, &decaySlider, &decayLabel, &sustainSlider, &sustainLabel, &releaseSlider, &releaseLabel })
-        component->setVisible (false);
-    for (juce::Component* component : std::initializer_list<juce::Component*> { &granularSizeSlider, &granularSizeLabel, &granularDensitySlider, &granularDensityLabel, &granularPitchSlider, &granularPitchLabel, &granularMixSlider, &granularMixLabel, &granularPreset, &granularEnabledButton, &harmonyShiftSlider, &harmonyShiftLabel, &harmonyDetuneSlider, &harmonyDetuneLabel, &harmonyMixSlider, &harmonyMixLabel, &harmonyPreset, &harmonyEnabledButton, &randomAmountSlider, &randomAmountLabel, &randomRateSlider, &randomRateLabel, &randomMixSlider, &randomMixLabel, &randomPreset, &randomEnabledButton, &granularTextureTab, &harmonyTextureTab, &randomTextureTab })
-        component->setVisible (true);
-    for (auto* label : { &granularSizeLabel, &granularDensityLabel, &granularPitchLabel, &granularMixLabel, &harmonyShiftLabel, &harmonyDetuneLabel, &harmonyMixLabel, &randomAmountLabel, &randomRateLabel, &randomMixLabel })
-        label->setColour (juce::Label::textColourId, juce::Colour (0xff202020));
-    resized();
-    repaint();
 }
 
 void OneShotSamplerAudioProcessorEditor::chooseEffectForSlot (int slot)
@@ -2702,36 +2595,40 @@ void OneShotSamplerAudioProcessorEditor::removeEffectFromSlot (int slot)
 
 void OneShotSamplerAudioProcessorEditor::timerCallback()
 {
-    // Keep phase unbounded: trigonometric functions are periodic, and never
-    // wrapping this value avoids the single-frame discontinuity a modulo reset
-    // can introduce in complex visuals.
-    fxVisualPhase += 0.0045f;
+    if (! isShowing())
+        return;
+
+    const auto now = juce::Time::getMillisecondCounterHiRes() * 0.001;
+    const auto dt = lastVisualTime > 0.0 ? juce::jlimit (0.0, 0.1, now - lastVisualTime) : 0.0;
+    lastVisualTime = now;
+    visualSeconds += dt;
+    fxVisualPhase = (float) (visualSeconds * 0.135);
+
     const auto meterTarget = juce::jlimit (0.0f, 1.0f, audioProcessor.getOutputLevel());
-    // Fast attack, slow release: visual meters breathe with the audio rather
-    // than flickering between host audio blocks.
-    visualSignalLevel += (meterTarget - visualSignalLevel) * (meterTarget > visualSignalLevel ? 0.34f : 0.075f);
-    updateScopeAndMeters();
-    const std::array<int, 5> tabEffects { 1, 7, 9, 2, 5 };
-    for (size_t i = 0; i < tabEffects.size(); ++i)
+    visualSignalLevel += (meterTarget - visualSignalLevel) * (meterTarget > visualSignalLevel ? 0.19f : 0.039f);
+    if (++meterTick % 2 == 0)
     {
-        const auto target = isEffectEnabled (tabEffects[i]) ? 1.0f : 0.0f;
-        fxCardReveal[i] += (target - fxCardReveal[i]) * 0.18f;
-        fxCardPulse[i] = juce::jmax (0.0f, fxCardPulse[i] - 0.06f);
+        updateScopeAndMeters();
+        scopeView.repaint();
+        limiterView.repaint();
+        footerView.repaint();
     }
 
-    // Each animated region is its own opaque component, so a tick repaints
-    // only those small views and never runs the big board paint.
-    scopeView.repaint();
-    limiterView.repaint();
-    footerView.repaint();
     moduleView.setVisible (selectedFx != 5);
     if (selectedFx != 5) moduleView.repaint();
-    for (size_t i = 0; i < tabEffects.size(); ++i)
+    for (size_t i = 0; i < cardViews.size(); ++i)
     {
-        const auto transitioning = fxCardReveal[i] > 0.01f && fxCardReveal[i] < 0.99f;
-        if (transitioning || fxCardPulse[i] > 0.0f)
+        const auto pulsing = fxCardPulse[i] > 0.0f;
+        fxCardPulse[i] = juce::jmax (0.0f, fxCardPulse[i] - (float) dt * 1.8f);
+        const auto enabled = isEffectEnabled (cardEffects[i]);
+        const auto changed = enabled != lastCardEnabled[i];
+        if (changed)
+        {
+            lastCardEnabled[i] = enabled;
+            cardViews[i].setBounds (cardVisualRect (i));
             repaint (beta2EffectTabBounds[i]);
-        else if (fxCardReveal[i] >= 0.99f)
+        }
+        if (enabled || changed || pulsing)
             cardViews[i].repaint();
     }
 }
