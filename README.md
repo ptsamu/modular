@@ -7,3 +7,10 @@ but mainly still working on the ui atm, sounds and fx have barely been touched, 
 (1 pixel change is opening a portal of infinite bugs)
 
 but still hanging in there i think its coming out super cool :))
+
+
+
+
+as of 11/14
+
+barely have time to keep working on it due to personal reasons, seriously considering dropping this.
