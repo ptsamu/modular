@@ -78,6 +78,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout OneShotSamplerAudioProcessor
         layout.add (std::make_unique<juce::AudioParameterFloat> ("duckLevel" + juce::String (i),
             "Sidechain Point " + juce::String (i + 1) + " Level", juce::NormalisableRange<float> (-1.0f, 1.0f, 0.001f), 0.0f));
     layout.add (std::make_unique<juce::AudioParameterBool> ("duckOn", "Sidechain Enabled", false));
+    layout.add (std::make_unique<juce::AudioParameterChoice> ("duckTrigger", "Sidechain Trigger", juce::StringArray { "Note", "Sync" }, 1));
     layout.add (std::make_unique<juce::AudioParameterFloat> ("duckDepth", "Sidechain Mix", juce::NormalisableRange<float> (0, 100, 1), 65));
     layout.add (std::make_unique<juce::AudioParameterFloat> ("duckMidpoint", "Sidechain Curve Timing",
         juce::NormalisableRange<float> (0.15f, 0.85f, 0.001f), 0.5f));
@@ -86,7 +87,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout OneShotSamplerAudioProcessor
     layout.add (std::make_unique<juce::AudioParameterFloat> ("duckLate", "Sidechain Late Timing",
         juce::NormalisableRange<float> (0.10f, 0.90f, 0.001f), 0.5f));
     layout.add (std::make_unique<juce::AudioParameterChoice> ("duckShape", "Sidechain Shape", duckShapeNames(), 1));
-    layout.add (std::make_unique<juce::AudioParameterChoice> ("duckRate", "Sidechain Rate", juce::StringArray { "1/8", "1/4", "1/2" }, 1));
+    layout.add (std::make_unique<juce::AudioParameterChoice> ("duckRate", "Sidechain Rate", juce::StringArray { "1/8", "1/4", "1/2", "1 bar", "2 bars", "4 bars" }, 1));
     layout.add (std::make_unique<juce::AudioParameterChoice> ("duckRoute", "Sidechain Target", juce::StringArray { "A", "B", "Both" }, 2));
     for (int layer = 0; layer < 2; ++layer)
         for (int effect = 0; effect < 10; ++effect)
@@ -685,15 +686,22 @@ void OneShotSamplerAudioProcessor::Rack::process (OneShotSamplerAudioProcessor& 
             textureWritePosition = (textureWritePosition + 1) % textureBuffer.getNumSamples();
         }
     };
-    bool delayInRack = false;
+    // Capture texture from the source before any spatial tails are added.
+    // The engines share one history and must advance it exactly once.
+    if (granularWet.getCurrentValue() > 0.0001f || granularWet.getTargetValue() > 0.0001f
+        || harmonyWet.getCurrentValue() > 0.0001f || harmonyWet.getTargetValue() > 0.0001f
+        || randomWet.getCurrentValue() > 0.0001f || randomWet.getTargetValue() > 0.0001f)
+        applyTextureLab();
+
+    bool delayInRack = false, reverbInRack = false;
     for (int slot = 0; slot < 7; ++slot)
     {
         const auto effect = owner.getFxSlotEffect (slot);
         if (effect < 0 || ! owner.isLayerFxOn (effect, layer, owner.getFxSlotEnabled (slot))) continue;
         switch (effect)
         {
-            case 0: delayInRack = true; applyDelay(); break;
-            case 1: applyReverb(); break;
+            case 0: delayInRack = true; break;
+            case 1: reverbInRack = true; break;
             case 2: applyChorus(); break;
             case 3: phaser.setRate (value (FxValue::phaserRate)); phaser.setDepth (value (FxValue::phaserDepth)); phaser.setFeedback (value (FxValue::phaserFeedback)); phaser.setMix (value (FxValue::phaserMix)); phaser.process (juce::dsp::ProcessContextReplacing<float> (block)); break;
             case 4: applyFlanger(); break;
@@ -702,22 +710,20 @@ void OneShotSamplerAudioProcessor::Rack::process (OneShotSamplerAudioProcessor& 
             default: break;
         }
     }
-    // Texture Lab runs as its own optional final creative layer, independent
-    // of which FX cards happen to be in the rack.
-    // One coordinated texture pass means several engines can run together
-    // without each one advancing the shared circular buffer independently.
-    if (granularWet.getCurrentValue() > 0.0001f || granularWet.getTargetValue() > 0.0001f
-        || harmonyWet.getCurrentValue() > 0.0001f || harmonyWet.getTargetValue() > 0.0001f
-        || randomWet.getCurrentValue() > 0.0001f || randomWet.getTargetValue() > 0.0001f)
-        applyTextureLab();
+    // Delay and reverb receive the shaped sound; their tails do not feed back
+    // into texture, modulation, or EQ.
     if (delayInRack)
+    {
+        applyDelay();
         delayHasContent = true;
+    }
     else if (delayHasContent)
     {
         delayBuffer.clear();
         delayWritePosition = 0;
         delayHasContent = false;
     }
+    if (reverbInRack) applyReverb();
 }
 
 void OneShotSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi)
@@ -727,13 +733,15 @@ void OneShotSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffe
     if (buffer.getNumChannels() == 0 || layerBuffers[0].getNumSamples() == 0)
         return;
 
-    double tempo = 0.0, beat = 0.0;
+    double tempo = 0.0, beat = 0.0, beatsPerBar = 4.0;
     bool sync = false;
     if (auto* head = getPlayHead())
         if (auto position = head->getPosition())
         {
             if (auto bpm = position->getBpm())
                 tempo = *bpm;
+            if (const auto meter = position->getTimeSignature(); meter && meter->numerator > 0 && meter->denominator > 0)
+                beatsPerBar = 4.0 * meter->numerator / meter->denominator;
             if (const auto ppq = position->getPpqPosition(); position->getIsPlaying() && ppq && std::isfinite (*ppq))
             {
                 beat = *ppq;
@@ -774,7 +782,9 @@ void OneShotSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffe
     }
 
     const auto offsetMs = parameters.getRawParameterValue ("layerOffsetMs")->load();
-    const auto duck = sync && parameters.getRawParameterValue ("duckOn")->load() > 0.5f
+    const auto continuous = parameters.getRawParameterValue ("duckTrigger")->load() > 0.5f;
+    sync = sync && continuous;
+    const auto duck = parameters.getRawParameterValue ("duckOn")->load() > 0.5f
         ? parameters.getRawParameterValue ("duckDepth")->load() * 0.01f : 0.0f;
     const auto shape = (int) parameters.getRawParameterValue ("duckShape")->load();
     const std::array<float, 3> duckLevels { parameters.getRawParameterValue ("duckLevel0")->load(),
@@ -782,7 +792,8 @@ void OneShotSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffe
     const auto handles = duckHandles ({ parameters.getRawParameterValue ("duckEarly")->load(),
         parameters.getRawParameterValue ("duckMidpoint")->load(), parameters.getRawParameterValue ("duckLate")->load() });
     const auto route = (int) parameters.getRawParameterValue ("duckRoute")->load();
-    const auto period = std::array<double, 3> { 0.5, 1.0, 2.0 }[(size_t) juce::jlimit (0, 2, (int) parameters.getRawParameterValue ("duckRate")->load())];
+    const auto period = std::array<double, 6> { 0.5, 1.0, 2.0, beatsPerBar, 2.0 * beatsPerBar, 4.0 * beatsPerBar }
+        [(size_t) juce::jlimit (0, 5, (int) parameters.getRawParameterValue ("duckRate")->load())];
     const bool paired = enabled[0] && enabled[1] && playingSamples[0] && playingSamples[1];
     const auto trigger = [&] (size_t layer, int note, float velocity, int delay = 0)
     {
@@ -814,6 +825,9 @@ void OneShotSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffe
 
     std::array<float, 2> blockEnvelopePeak {};
     auto event = midi.begin();
+    auto duckEvent = midi.begin();
+    if (duck == 0.0f || continuous) duckNotePhase = 1.0;
+    else if (auditionNow[0] || auditionNow[1]) duckNotePhase = 0.0;
     const auto channels = buffer.getNumChannels();
     const auto grainHop = juce::jmax (8, juce::roundToInt (currentSampleRate * 0.024));
     const auto maxFrames = layerBuffers[0].getNumSamples();
@@ -980,15 +994,24 @@ void OneShotSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffe
             if (! enabled[layer] && ! sourcePower[layer].isSmoothing())
                 for (auto& voice : voices[layer]) { voice.active = false; voice.envelope.reset(); }
         }
+        const auto step = bpm / (60.0 * currentSampleRate * period);
+        auto phase = sync ? beat / period + offset * step : duckFreePhase;
+        phase -= std::floor (phase);
         if (duck > 0 || duckGain[0] != 1.0f || duckGain[1] != 1.0f)
         {
             const auto smooth = (float) (1.0 - std::exp (-1.0 / (0.002 * currentSampleRate)));
-            const auto step = bpm / (60.0 * currentSampleRate * period);
-            auto phase = beat / period + offset * step;
-            phase -= std::floor (phase);
             for (int frame = 0; frame < count; ++frame)
             {
-                const auto gain = 1.0f - duck * (1.0f - editedDuckCurve (duckWarp ((float) phase, handles), shape, duckLevels));
+                if (! continuous && duck > 0.0f)
+                    while (duckEvent != midi.end() && (*duckEvent).samplePosition <= offset + frame)
+                    {
+                        if ((*duckEvent).getMessage().isNoteOn()) duckNotePhase = 0.0;
+                        ++duckEvent;
+                    }
+                const auto position = continuous ? phase : duckNotePhase;
+                const auto gain = position < 1.0
+                    ? 1.0f - duck * (1.0f - editedDuckCurve (duckWarp ((float) position, handles), shape, duckLevels))
+                    : 1.0f;
                 for (size_t layer = 0; layer < 2; ++layer)
                 {
                     const auto target = route == 2 || route == (int) layer ? gain : 1.0f;
@@ -1000,8 +1023,12 @@ void OneShotSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffe
                 }
                 phase += step;
                 if (phase >= 1.0) phase -= 1.0;
+                if (! continuous && duckNotePhase < 1.0) duckNotePhase = juce::jmin (1.0, duckNotePhase + step);
             }
         }
+        else
+            phase += count * step;
+        duckFreePhase = phase - std::floor (phase);
         for (int ch = 0; ch < channels; ++ch)
         {
             buffer.copyFrom (ch, offset, a, ch, 0, count);

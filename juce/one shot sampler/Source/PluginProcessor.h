@@ -183,6 +183,8 @@ private:
     std::array<std::array<Voice, 8>, 2> voices;
     juce::SmoothedValue<float> outputGain;
     std::array<float, 2> duckGain { 1.0f, 1.0f };
+    double duckNotePhase = 1.0;
+    double duckFreePhase = 0.0;
     juce::AudioFormatManager formatManager;
     std::array<std::shared_ptr<SampleData>, 2> loadedSamples;
     std::vector<std::shared_ptr<SampleData>> retiredSamples;

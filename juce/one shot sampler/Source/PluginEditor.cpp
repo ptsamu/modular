@@ -1991,7 +1991,7 @@ void OneShotSamplerAudioProcessorEditor::paint (juce::Graphics& g)
 
 
     g.setColour (ink); g.setFont (font (16.0f));
-    g.drawText (showOffsetEq ? "7-band EQ" : showSidechain ? "Sidechain / Sync" : "Layer offset", beta2ModuleBounds.reduced (20).removeFromTop (24),
+    g.drawText (showOffsetEq ? "7-band EQ" : showSidechain ? "Sidechain" : "Layer offset", beta2ModuleBounds.reduced (20).removeFromTop (24),
                 juce::Justification::centredLeft);
 
 
@@ -2317,6 +2317,10 @@ void OneShotSamplerAudioProcessorEditor::drawModuleLive (juce::Graphics& g)
         g.setColour (modularInk.withAlpha (0.65f));
         g.drawRoundedRectangle (area, 5.0f, 1.0f);
         const auto graph = area.reduced (9.0f, 8.0f);
+        g.setColour (modularInk.withAlpha (0.38f));
+        const auto liveTrace = juce::AffineTransform::scale (graph.getWidth(), graph.getHeight() * 0.45f)
+                                   .translated (graph.getX(), graph.getCentreY());
+        g.strokePath (scopeTrace, juce::PathStrokeType (0.9f), liveTrace);
         for (int i = 1; i < 4; ++i)
             g.drawVerticalLine (juce::roundToInt (graph.getX() + graph.getWidth() * i / 4.0f), graph.getY(), graph.getBottom());
         juce::Path p;
@@ -2412,7 +2416,7 @@ void OneShotSamplerAudioProcessorEditor::layoutLiveViews()
     auto panel = beta2ModuleBounds.reduced (20);
     auto header = panel.removeFromTop (27);
     panelMode.setBounds (header.removeFromRight (72).reduced (4, 0));
-    duckOn.setBounds (header.removeFromRight (48));
+    duckOn->setBounds (header.removeFromRight (40).reduced (2, 3));
     panel.removeFromTop (5);
     auto footer = panel.removeFromBottom (29);
     auto duckFooter = footer;
@@ -2441,7 +2445,7 @@ void OneShotSamplerAudioProcessorEditor::layoutLiveViews()
     offsetSlider.setVisible (! showOffsetEq && ! showSidechain);
     offsetReset.setVisible (! showOffsetEq && ! showSidechain);
     panelMode.setVisible (true);
-    duckOn.setVisible (! showOffsetEq && showSidechain);
+    duckOn->setVisible (! showOffsetEq && showSidechain);
     duckDepth.setVisible (! showOffsetEq && showSidechain);
     duckMixLabel.setVisible (! showOffsetEq && showSidechain);
     moduleView.setMouseCursor (showSidechain ? juce::MouseCursor::DraggingHandCursor : juce::MouseCursor::NormalCursor);
@@ -2487,9 +2491,12 @@ void OneShotSamplerAudioProcessorEditor::setupLiveViews()
         moduleView.repaint();
         repaint (beta2ModuleBounds);
     };
-    duckOn.setColour (juce::ToggleButton::textColourId, modularInk);
-    addAndMakeVisible (duckOn);
-    duckOnLink = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (audioProcessor.parameters, "duckOn", duckOn);
+    duckOn = std::make_unique<BlueButton> ("Off");
+    duckOn->setClickingTogglesState (true);
+    addAndMakeVisible (*duckOn);
+    duckOnLink = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (audioProcessor.parameters, "duckOn", *duckOn);
+    duckOn->onStateChange = [this] { duckOn->setButtonText (duckOn->getToggleState() ? "On" : "Off"); };
+    duckOn->onStateChange();
     configureKnobDrag (duckDepth);
     duckDepth.setSliderStyle (juce::Slider::RotaryVerticalDrag);
     duckDepth.setLookAndFeel (&frameworksLookAndFeel);
@@ -2536,8 +2543,8 @@ void OneShotSamplerAudioProcessorEditor::setupLiveViews()
             moduleView.repaint();
         });
     duckShapeLink->sendInitialUpdate();
-    const std::array<const char*, 2> ids { "duckRate", "duckRoute" };
-    const std::array<const char*, 2> titles { "Rate", "Target layer" };
+    const std::array<const char*, 3> ids { "duckTrigger", "duckRate", "duckRoute" };
+    const std::array<const char*, 3> titles { "Trigger", "Rate", "Target layer" };
     for (size_t i = 0; i < duckChoices.size(); ++i)
     {
         auto& choice = duckChoices[i];
@@ -2955,6 +2962,7 @@ void OneShotSamplerAudioProcessorEditor::timerCallback()
     {
         updateScopeAndMeters();
         scopeView.repaint();
+        if (showSidechain && ! showOffsetEq) moduleView.repaint();
         limiterView.repaint();
         footerView.repaint();
     }

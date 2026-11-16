@@ -227,7 +227,7 @@ private:
     bool showOffsetEq = false;
     bool showSidechain = true;
     juce::TextButton panelMode { "Offset" };
-    juce::ToggleButton duckOn { "On" };
+    std::unique_ptr<juce::Button> duckOn;
     juce::Slider duckDepth;
     juce::Label duckMixLabel;
     std::array<float, 3> duckTiming { 0.5f, 0.5f, 0.5f };
@@ -240,10 +240,10 @@ private:
     std::array<std::unique_ptr<juce::ParameterAttachment>, 3> duckLevelLinks;
     int duckShapeIndex = 1;
     std::unique_ptr<juce::ParameterAttachment> duckShapeLink;
-    std::array<juce::ComboBox, 2> duckChoices;
+    std::array<juce::ComboBox, 3> duckChoices;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> duckOnLink;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> duckDepthLink;
-    std::array<std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment>, 2> duckChoiceLinks;
+    std::array<std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment>, 3> duckChoiceLinks;
     float offsetDragStart = 0.0f;
     std::array<LiveView, 5> cardViews;
     void timerCallback() override;
