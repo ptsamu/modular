@@ -893,7 +893,10 @@ void PresetSelector::setOpen (bool shouldOpen)
         return;
     isOpen_ = shouldOpen;
     if (isOpen_)
+    {
         filteredEffect = activeEffect;
+        if (isShowing()) grabKeyboardFocus();
+    }
     updateBounds();
     repaint();
 }
@@ -974,7 +977,7 @@ void PresetSelector::paint (juce::Graphics& g)
     for (int index = 0; index < 4; ++index)
     {
         const auto row = presetRowBounds (index).toFloat();
-        const auto selected = filteredEffect == activeEffect && index == selectedPreset;
+        const auto selected = index == (readPresetForEffect ? readPresetForEffect (filteredEffect) : selectedPreset);
         const auto hovered = index == hoveredPreset;
         if (hovered)
         {
@@ -1025,8 +1028,6 @@ void PresetSelector::mouseDown (const juce::MouseEvent& event)
         if (filterBounds (index).contains (point))
         {
             filteredEffect = effectForFilterIndex (index);
-            activeEffect = filteredEffect;
-            if (onModuleSelected) onModuleSelected (activeEffect);
             repaint();
             return;
         }
@@ -1042,6 +1043,13 @@ void PresetSelector::mouseDown (const juce::MouseEvent& event)
         }
 
     setOpen (false);
+}
+
+bool PresetSelector::keyPressed (const juce::KeyPress& key)
+{
+    if (! isOpen_ || key != juce::KeyPress::escapeKey) return false;
+    setOpen (false);
+    return true;
 }
 
 void PresetSelector::mouseMove (const juce::MouseEvent& event)
@@ -1225,11 +1233,12 @@ public:
         {
             revision = version;
             filename = owner.getSampleName (layer);
+            missingFilename = owner.getMissingSampleName (layer);
             peaks = owner.getWaveformPeaks (layer);
             rebuildWave();
-            browse.setButtonText (filename.isEmpty() ? "Browse" : "Replace");
+            browse.setButtonText (missingFilename.isNotEmpty() ? "Relink" : filename.isEmpty() ? "Browse" : "Replace");
             play.setEnabled (filename.isNotEmpty() && power.getToggleState());
-            clear.setEnabled (filename.isNotEmpty());
+            clear.setEnabled (filename.isNotEmpty() || missingFilename.isNotEmpty());
             repaint();
         }
         const auto next = power.getToggleState() ? owner.getLayerProgress (layer) : -1.0f;
@@ -1310,7 +1319,8 @@ public:
         if (error.isNotEmpty() || overDrop || peaks.empty())
         {
             g.setFont (juce::FontOptions (layer == 0 ? 19.0f : 16.0f));
-            g.drawFittedText (error.isNotEmpty() ? error : overDrop ? "Release to load" : "Drop a one-shot",
+            g.drawFittedText (error.isNotEmpty() ? error : overDrop ? "Release to load"
+                              : missingFilename.isNotEmpty() ? "Missing: " + missingFilename : "Drop a one-shot",
                               wave.reduced (8).withTrimmedBottom (18), juce::Justification::centred, 1);
             g.setFont (juce::FontOptions (10.0f));
             g.drawText ("WAV / AIFF", wave.withY (wave.getCentreY() + 10).withHeight (18), juce::Justification::centred);
@@ -1445,7 +1455,7 @@ private:
     std::unique_ptr<juce::FileChooser> chooser;
     juce::Rectangle<int> wave;
     juce::Path wavePath;
-    juce::String filename, error;
+    juce::String filename, missingFilename, error;
     std::vector<float> peaks;
     std::array<float, 2> trim { 0.0f, 1.0f };
     unsigned int revision = (unsigned int) -1;
@@ -1698,11 +1708,10 @@ OneShotSamplerAudioProcessorEditor::OneShotSamplerAudioProcessorEditor (OneShotS
     harmonyPreset.onChange = [setParameter, this] { const float v[][3] { { -5, 5, .18f }, { 2, 11, .24f }, { 8, 17, .30f }, { 12, 28, .36f } }; const auto& p = v[juce::jlimit (0, 3, harmonyPreset.getSelectedId() - 1)]; setParameter ("harmonyShift", p[0]); setParameter ("harmonyDetune", p[1]); setParameter ("harmonyMix", p[2]); };
     randomPreset.onChange = [setParameter, this] { const float v[][3] { { .12f, 2, .12f }, { .30f, 5, .20f }, { .55f, 9, .28f }, { .82f, 15, .34f } }; const auto& p = v[juce::jlimit (0, 3, randomPreset.getSelectedId() - 1)]; setParameter ("randomAmount", p[0]); setParameter ("randomRate", p[1]); setParameter ("randomMix", p[2]); };
 
-    presetSelector.onModuleSelected = [this] (int effect)
+    presetSelector.setWantsKeyboardFocus (true);
+    presetSelector.readPresetForEffect = [this] (int effect)
     {
-        // Filtering the menu also focuses its matching module, but never
-        // changes its enabled state. Preset browsing must be safe and silent.
-        selectEffect (effect);
+        return (int) audioProcessor.parameters.state.getProperty (presetBankKey (effect), 0);
     };
     presetSelector.onPresetSelected = [this] (int effect, int preset)
     {
@@ -1810,11 +1819,6 @@ OneShotSamplerAudioProcessorEditor::OneShotSamplerAudioProcessorEditor (OneShotS
     {
         fxChain[(size_t) slot] = audioProcessor.getFxSlotEffect (slot);
         fxSlotEnabled[(size_t) slot] = audioProcessor.getFxSlotEnabled (slot);
-        // A saved session from an earlier rack is migrated in the processor.
-        // Keep each fixed card mapped to its corresponding effect from here on.
-        if (fxChain[(size_t) slot] != slot)
-            audioProcessor.setFxSlotState (slot, slot, fxSlotEnabled[(size_t) slot]);
-        fxChain[(size_t) slot] = slot;
     }
     effectPickerMenu = std::make_unique<EffectPatchMenu> (frameworksLookAndFeel, [this] (int effect)
     {
@@ -1828,17 +1832,19 @@ OneShotSamplerAudioProcessorEditor::OneShotSamplerAudioProcessorEditor (OneShotS
     addAndMakeVisible (*effectPickerMenu);
     effectPickerMenu->setVisible (false);
     addMouseListener (this, true);
-    refreshEffectEnableStates();
     showFxPage (false);
     setOpaque (true);
     setSize (1640, 720);
-    setResizable (false, false);
+    setResizable (true, true);
+    setResizeLimits (1440, 680, 1920, 900);
     polishKnobs();
     startTimerHz (60);
 }
 
 OneShotSamplerAudioProcessorEditor::~OneShotSamplerAudioProcessorEditor()
 {
+    stopTimer();
+    duckDepth.setLookAndFeel (nullptr);
     removeMouseListener (this);
 }
 
@@ -2271,8 +2277,9 @@ void OneShotSamplerAudioProcessorEditor::drawLimiterLive (juce::Graphics& g)
     const auto limiter = limiterRect();
     g.setColour (ink); g.drawRoundedRectangle (limiter.toFloat().reduced (0.5f), 6.0f, 1.0f);
     g.setFont (font (11.0f)); g.drawText ("Safety clip", limiter.reduced (12, 8).withHeight (17), juce::Justification::centredLeft);
+    const auto reduction = audioProcessor.getProtectionReductionDb();
+    g.setColour (ink.withAlpha (reduction >= 0.05f ? 1.0f : 0.25f));
     g.fillEllipse ((float) limiter.getRight() - 24.0f, (float) limiter.getY() + 13.0f, 6.0f, 6.0f);
-    g.setFont (font (9.0f)); g.drawText ("Safe", limiter.getRight() - 50, limiter.getY() + 8, 24, 16, juce::Justification::centredLeft);
     g.setColour (ink.withAlpha (0.40f)); g.drawLine ((float) limiter.getX() + 12.0f, (float) limiter.getY() + 37.0f, (float) limiter.getRight() - 12.0f, (float) limiter.getY() + 37.0f, 1.0f);
     const auto outputActivity = visualSignalLevel;
     const auto activeSegments = juce::jlimit (0, 8, (int) std::ceil (outputActivity * 8.0f));
@@ -2283,7 +2290,7 @@ void OneShotSamplerAudioProcessorEditor::drawLimiterLive (juce::Graphics& g)
         g.fillRoundedRectangle (meter, 2.0f);
     }
     g.setColour (ink); g.setFont (font (10.0f)); g.drawText ("Ceiling  -0.3 dBFS", limiter.getX() + 12, limiter.getY() + 108, limiter.getWidth() - 24, 15, juce::Justification::centred);
-    g.setFont (font (9.0f)); g.drawText ("Soft-clip protection", limiter.getX() + 12, limiter.getY() + 130, limiter.getWidth() - 24, 15, juce::Justification::centred);
+    g.setFont (font (9.0f)); g.drawText ("Reduction  " + juce::String (reduction, 1) + " dB", limiter.getX() + 12, limiter.getY() + 130, limiter.getWidth() - 24, 15, juce::Justification::centred);
 }
 
 
@@ -2573,10 +2580,19 @@ void OneShotSamplerAudioProcessorEditor::setupLiveViews()
                     return;
                 }
                 const auto handles = audioProcessor.duckHandles (duckTiming);
-                const auto x = (e.position.x - 9.5f) / juce::jmax (1, moduleView.getWidth() - 19);
-                duckDragging = 0;
-                for (int i = 1; i < 3; ++i)
-                    if (std::abs (x - handles[(size_t) i]) < std::abs (x - handles[(size_t) duckDragging])) duckDragging = i;
+                const auto plot = moduleView.getLocalBounds().toFloat().reduced (9.5f, 8.5f);
+                float distance = 11.0f;
+                for (int i = 0; i < 3; ++i)
+                {
+                    const auto x = plot.getX() + plot.getWidth() * handles[(size_t) i];
+                    const auto y = plot.getBottom() - plot.getHeight() * audioProcessor.editedDuckCurve (0.25f * (i + 1), duckShapeIndex, duckLevels);
+                    if (const auto d = e.position.getDistanceFrom ({ x, y }); d < distance)
+                    {
+                        distance = d;
+                        duckDragging = i;
+                    }
+                }
+                if (duckDragging < 0) return;
                 duckDragStart = handles[(size_t) duckDragging];
                 duckLevelDragStart = audioProcessor.editedDuckCurve (0.25f * (duckDragging + 1), duckShapeIndex, duckLevels);
                 duckLevelOffsetStart = duckLevels[(size_t) duckDragging];
@@ -2621,8 +2637,8 @@ void OneShotSamplerAudioProcessorEditor::setupLiveViews()
 
 void OneShotSamplerAudioProcessorEditor::resized()
 {
-    // This is deliberately a fixed board.  There are no responsive layers
-    // competing for the same pixels as there were in Beta 1.
+    // Preserve the full-size board, giving back height from the tall source
+    // display first so the Sidechain graph and controls stay usable.
     auto board = getLocalBounds().reduced (18);
     auto headerRow = board.removeFromTop (56);
     headerRow.removeFromLeft (700);
@@ -2641,7 +2657,7 @@ void OneShotSamplerAudioProcessorEditor::resized()
     auto signalColumn = board.removeFromLeft ((int) std::round (board.getWidth() * 0.45f));
     board.removeFromLeft (gap);
     auto outputColumn = board;
-    beta2SourceBounds = sourceColumn.removeFromTop (390);
+    beta2SourceBounds = sourceColumn.removeFromTop (juce::jmin (390, sourceColumn.getHeight() - 200));
     sourceColumn.removeFromTop (gap);
     beta2ModuleBounds = sourceColumn;
     beta2SignalBounds = signalColumn.removeFromTop (255);
@@ -2733,11 +2749,12 @@ void OneShotSamplerAudioProcessorEditor::resized()
     const auto placeEngineControl = [this] (juce::Slider& slider, juce::Label& label, juce::Rectangle<int> area, juce::Colour labelColour, juce::Colour dialColour)
     {
         slider.setLookAndFeel (&frameworksLookAndFeel);
-        slider.setBounds (area.withTrimmedTop (0).withHeight (55));
-        label.setBounds (area.withTrimmedTop (56).withHeight (13));
+        const auto controlHeight = juce::jmin (55, area.getHeight() - 15);
+        slider.setBounds (area.withHeight (controlHeight));
+        label.setBounds (area.withTrimmedTop (controlHeight + 1).withHeight (13));
         slider.setVisible (true); label.setVisible (true);
         slider.setName ("engineDial");
-        slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 50, 15);
+        slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, juce::jmin (50, area.getWidth()), 15);
         slider.setColour (juce::Slider::rotarySliderFillColourId, dialColour);
         slider.setColour (juce::Slider::thumbColourId, labelColour);
         label.setColour (juce::Label::textColourId, labelColour);

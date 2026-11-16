@@ -115,8 +115,9 @@ public:
     void mouseDown (const juce::MouseEvent&) override;
     void mouseMove (const juce::MouseEvent&) override;
     void mouseExit (const juce::MouseEvent&) override;
+    bool keyPressed (const juce::KeyPress&) override;
 
-    std::function<void (int)> onModuleSelected;
+    std::function<int (int)> readPresetForEffect;
     std::function<void (int, int)> onPresetSelected;
 
 private:

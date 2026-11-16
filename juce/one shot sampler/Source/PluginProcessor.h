@@ -91,7 +91,8 @@ public:
     void setStateInformation (const void* data, int sizeInBytes) override;
 
     bool loadSample (const juce::File& file, int layer = 0);
-    void clearSample (int layer);
+    void clearSample (int layer, bool forgetPath = true);
+    juce::String getMissingSampleName (int layer) const;
     juce::String getSampleName (int layer = 0) const;
     bool hasLoadedSample (int layer = 0) const;
     std::vector<float> getWaveformPeaks (int layer) const;
@@ -131,6 +132,7 @@ public:
     bool isLayerFxOn (int effect, int layer, bool legacy) const noexcept;
     std::array<std::array<std::atomic<float>*, 10>, 2> layerFxOn {};
     float getOutputLevel() const noexcept { return outputLevel.load(); }
+    float getProtectionReductionDb() const noexcept { return protectionReductionDb.load (std::memory_order_relaxed); }
     float getEnvelopeLevel (int layer) const noexcept { return envelopeLevel[(size_t) layer].load(); }
     static juce::String envelopeParamId (int layer, const char* stage);
     float getPlaybackProgress() const noexcept { return playbackProgress.load(); }
@@ -176,13 +178,21 @@ private:
         int firstFrame = 0, endFrame = 0;
         bool reverse = false;
         int midiNote = -1;
+        int midiChannel = 0;
+        bool keyHeld = false;
+        uint64_t serial = 0;
+        std::array<float, 2> lastOutput {};
         float velocity = 1.0f;
         bool active = false;
         CurvedEnvelope envelope;
     };
     std::array<std::array<Voice, 8>, 2> voices;
+    uint64_t voiceSerial = 0;
+    std::array<std::array<float, 2>, 2> retiringOutput {};
+    std::array<int, 2> retiringFrames {};
     juce::SmoothedValue<float> outputGain;
     std::array<float, 2> duckGain { 1.0f, 1.0f };
+    std::atomic<float> protectionReductionDb { 0.0f };
     double duckNotePhase = 1.0;
     double duckFreePhase = 0.0;
     juce::AudioFormatManager formatManager;
@@ -194,33 +204,65 @@ private:
         void prepare (double sampleRate, int blockSize);
         void process (OneShotSamplerAudioProcessor&, juce::AudioBuffer<float>&, double bpm, int layer);
         juce::AudioBuffer<float> delayBuffer;
+        juce::AudioBuffer<float> bypassDry;
+        std::array<juce::SmoothedValue<float>, 7> bypassMix;
+        std::array<bool, 7> effectRunning {};
         int delayWritePosition = 0;
         std::array<float, 2> delayToneState {};
         juce::dsp::Reverb reverb;
         juce::AudioBuffer<float> reverbPreDelayBuffer, reverbWetBuffer;
         int reverbPreDelayWritePosition = 0;
+        float reverbPreDelayCurrent = 0.0f;
         std::array<float, 2> reverbToneState {};
         std::array<float, 2> reverbHighPassState {};
         juce::dsp::Phaser<float> phaser;
         juce::AudioBuffer<float> chorusBuffer, flangerBuffer, flutterBuffer;
         int chorusWritePosition = 0, flangerWritePosition = 0, flutterWritePosition = 0;
         float chorusPhase = 0.0f, flangerPhase = 0.0f;
+        std::array<float, 3> modDelayCurrent {}, modSweepCurrent {};
         float flutterRandom = 0.0f, flutterRandomTarget = 0.0f;
         int flutterRandomCountdown = 0;
         std::array<float, 2> chorusFeedbackState {};
         std::array<float, 2> flangerFeedbackState {};
         juce::AudioBuffer<float> textureBuffer;
         int textureWritePosition = 0;
-        float grainReadPosition = 0.0f, randomReadPosition = 0.0f;
+        int textureValid = 0;
+        double textureClock = 0.0, grainReadPosition = 0.0, randomReadPosition = 0.0;
+        float latchedGrainRate = 1.0f, latchedRandomAmount = 0.0f;
+        int latchedGrainInterval = 1, latchedRandomInterval = 1, latchedGrainDuration = 1;
         float textureOrbitPhase = 0.0f;
         int grainSamplesUntilReset = 0, randomSamplesUntilReset = 0;
         juce::Random textureRandom;
         juce::SmoothedValue<float> granularWet, harmonyWet, randomWet;
-        std::array<std::array<juce::dsp::IIR::Filter<float>, 2>, 7> eqBands;
+        struct EqStage
+        {
+            using Coefficients = std::array<float, 6>;
+            struct Filter
+            {
+                Coefficients c { 1, 0, 0, 1, 0, 0 };
+                std::array<float, 2> z1 {}, z2 {};
+                float tick (int channel, float input) noexcept
+                {
+                    const auto i = (size_t) channel;
+                    const auto output = c[0] * input + z1[i];
+                    z1[i] = c[1] * input - c[4] * output + z2[i];
+                    z2[i] = c[2] * input - c[5] * output;
+                    if (! std::isfinite (output) || ! std::isfinite (z1[i]) || ! std::isfinite (z2[i]))
+                    {
+                        z1[i] = z2[i] = 0.0f;
+                        return input;
+                    }
+                    return output;
+                }
+            };
+            Filter active, next;
+            int remaining = 0;
+            bool initialized = false;
+        };
+        std::array<EqStage, 7> eqBands;
         std::array<std::array<float, 4>, 7> eqCache {};
         juce::SmoothedValue<float> delayMixSmooth, reverbMixSmooth, chorusMixSmooth, flangerMixSmooth, flutterMixSmooth, delayTimeSmooth;
         bool delayTimeReady = false;
-        bool delayHasContent = false;
         float flutterWowPhase = 0.0f, flutterDriftPhase = 0.0f;
     };
     std::array<Rack, 2> racks;
