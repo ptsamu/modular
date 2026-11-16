@@ -60,7 +60,7 @@ public:
 private:
     void timerCallback() override;
     juce::Rectangle<float> getGraphArea() const;
-    std::array<juce::Point<float>, 4> getHandles() const;
+    std::array<juce::Point<float>, 4> getHandles (int layer) const;
     void setParameter (const char* id, float value);
 
     juce::AudioProcessorValueTreeState& parameters;
@@ -92,6 +92,7 @@ public:
 private:
     std::array<juce::Point<float>, 7> getHandles() const;
     float getResponseAtFrequency (float frequency) const;
+    juce::String prefixForBand (int band) const;
     void setBand (int band, float frequency, float gain);
     int draggedBand = -1;
     juce::Point<float> dragStart;
@@ -160,6 +161,11 @@ public:
     }
     std::function<juce::Colour()> background;
     std::function<void (juce::Graphics&)> draw;
+    std::function<void (const juce::MouseEvent&, bool)> drag;
+    std::function<void()> endDrag;
+    void mouseDown (const juce::MouseEvent& e) override { if (drag) drag (e, true); }
+    void mouseDrag (const juce::MouseEvent& e) override { if (drag) drag (e, false); }
+    void mouseUp (const juce::MouseEvent&) override { if (endDrag) endDrag(); }
 };
 
 class OneShotSamplerAudioProcessorEditor final : public juce::AudioProcessorEditor,
@@ -184,6 +190,7 @@ private:
     void selectEffect (int effect);
     void toggleEffect (int effect);
     bool isEffectEnabled (int effect) const;
+    bool legacyFxEnabled (int effect) const;
     void setEffectEnabled (int effect, bool shouldBeEnabled);
     void removeEffectFromSlot (int slot);
     void setSlotEnabled (int slot, bool shouldBeEnabled);
@@ -200,9 +207,44 @@ private:
     void drawFooterLive (juce::Graphics&);
     void drawLimiterLive (juce::Graphics&);
     void drawCardLive (juce::Graphics&, size_t i);
+    std::array<float, 3> cardIconValues (size_t card);
+    std::array<std::array<float, 3>, 5> lastCardIcons {};
     void layoutLiveViews();
     void setupLiveViews();
     LiveView scopeView, moduleView, footerView, limiterView;
+    juce::Slider offsetSlider;
+    juce::TextButton offsetReset { "Reset" };
+    struct DuckThumbnail final : juce::Button
+    {
+        DuckThumbnail() : juce::Button ("Duck shape") {}
+        void paintButton (juce::Graphics&, bool, bool) override;
+        int shape = 0;
+    };
+    std::array<DuckThumbnail, OneShotSamplerAudioProcessor::duckShapeCount> duckThumbnails;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> offsetAttachment;
+    std::array<std::vector<float>, 2> offsetPeaks;
+    std::array<unsigned int, 2> offsetRevisions { ~0u, ~0u };
+    bool showOffsetEq = false;
+    bool showSidechain = true;
+    juce::TextButton panelMode { "Offset" };
+    std::unique_ptr<juce::Button> duckOn;
+    juce::Slider duckDepth;
+    juce::Label duckMixLabel;
+    std::array<float, 3> duckTiming { 0.5f, 0.5f, 0.5f };
+    std::array<float, 3> duckLevels {};
+    float duckLevelDragStart = 0.0f;
+    float duckLevelOffsetStart = 0.0f;
+    float duckDragStart = 0.5f;
+    int duckDragging = -1;
+    std::array<std::unique_ptr<juce::ParameterAttachment>, 3> duckTimingLinks;
+    std::array<std::unique_ptr<juce::ParameterAttachment>, 3> duckLevelLinks;
+    int duckShapeIndex = 1;
+    std::unique_ptr<juce::ParameterAttachment> duckShapeLink;
+    std::array<juce::ComboBox, 3> duckChoices;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> duckOnLink;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> duckDepthLink;
+    std::array<std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment>, 3> duckChoiceLinks;
+    float offsetDragStart = 0.0f;
     std::array<LiveView, 5> cardViews;
     void timerCallback() override;
 
@@ -288,6 +330,9 @@ private:
     juce::Path scopeTrace, scopeGhost;
     float scopeDrawGain = 1.0f;
     bool initialisedReadouts = false;
+    std::array<int, 10> fxUiLayer { -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 };
+    void syncFxBanks();
+    juce::String presetBankKey (int effect) const;
     std::array<float, 2> meterLevel {}, meterPeakHold {};
     std::array<int, 2> meterHoldFrames {};
     std::array<float, 24> keyGlow {};

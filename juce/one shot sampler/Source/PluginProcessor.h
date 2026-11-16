@@ -100,6 +100,36 @@ public:
     void audition (int layer) noexcept { auditionPending[(size_t) layer].store (true); }
     static juce::String sourceParamId (int layer, const char* suffix);
     static juce::String routeParamId (int effect);
+    static juce::String fxParamId (int layer, const juce::String& id);
+    int getEffectLayer (int effect) const noexcept;
+    static constexpr int duckShapeCount = 16;
+    static juce::StringArray duckShapeNames();
+    static float duckCurve (float phase, int shape) noexcept;
+    static float editedDuckCurve (float phase, int shape, const std::array<float, 3>& levels) noexcept
+    {
+        const auto segment = juce::jlimit (0, 3, (int) (phase * 4.0f));
+        const auto from = segment == 0 ? 0.0f : levels[(size_t) segment - 1];
+        const auto to = segment == 3 ? 0.0f : levels[(size_t) segment];
+        const auto t = phase * 4.0f - (float) segment;
+        return juce::jlimit (0.0f, 1.0f, duckCurve (phase, shape) + from + (to - from) * t);
+    }
+    static float duckWarp (float phase, const std::array<float, 3>& handles) noexcept
+    {
+        float start = 0.0f;
+        for (size_t i = 0; i < handles.size(); ++i)
+        {
+            const auto end = handles[i];
+            if (phase <= end) return 0.25f * ((float) i + (phase - start) / (end - start));
+            start = end;
+        }
+        return 0.75f + 0.25f * (phase - start) / (1.0f - start);
+    }
+    static std::array<float, 3> duckHandles (const std::array<float, 3>& values) noexcept
+    {
+        return { values[0] * values[1], values[1], values[1] + (1.0f - values[1]) * values[2] };
+    }
+    bool isLayerFxOn (int effect, int layer, bool legacy) const noexcept;
+    std::array<std::array<std::atomic<float>*, 10>, 2> layerFxOn {};
     float getOutputLevel() const noexcept { return outputLevel.load(); }
     float getEnvelopeLevel (int layer) const noexcept { return envelopeLevel[(size_t) layer].load(); }
     static juce::String envelopeParamId (int layer, const char* stage);
@@ -139,6 +169,10 @@ private:
         double samplePosition = 0.0;
         double playbackRate = 1.0;
         double elapsed = 0.0, bendMultiplier = 1.0, tremPhase = 0.0;
+        double stretchRatio = 1.0;
+        std::array<double, 2> grainRead {};
+        int grainFrame = 0;
+        int onsetDelay = 0;
         int firstFrame = 0, endFrame = 0;
         bool reverse = false;
         int midiNote = -1;
@@ -148,6 +182,9 @@ private:
     };
     std::array<std::array<Voice, 8>, 2> voices;
     juce::SmoothedValue<float> outputGain;
+    std::array<float, 2> duckGain { 1.0f, 1.0f };
+    double duckNotePhase = 1.0;
+    double duckFreePhase = 0.0;
     juce::AudioFormatManager formatManager;
     std::array<std::shared_ptr<SampleData>, 2> loadedSamples;
     std::vector<std::shared_ptr<SampleData>> retiredSamples;
@@ -190,8 +227,9 @@ private:
     // EQ band types live in the value tree (message thread). The audio thread
     // only ever reads these atomic mirrors, and coefficients are rebuilt only
     // when a value actually changes.
-    std::array<std::atomic<int>, 7> eqBandTypes {};
-    std::array<std::array<std::atomic<float>*, 3>, 7> eqParamPointers {};
+    std::array<std::array<std::atomic<int>, 7>, 2> eqBandTypes {};
+    std::array<std::array<std::array<std::atomic<float>*, 3>, 7>, 2> eqParamPointers {};
+    std::array<std::array<std::atomic<float>*, 36>, 2> fxValues {};
     std::array<juce::AudioBuffer<float>, 2> layerBuffers;
     std::array<std::shared_ptr<SampleData>, 2> playingSamples;
     std::array<std::atomic<float>, 2> layerProgress {};
