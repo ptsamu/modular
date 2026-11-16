@@ -1,0 +1,53 @@
+name: Build Modular (macOS)
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode 16 (keep a stable toolchain)
+        run: |
+          ls /Applications | grep -i xcode || true
+          for v in 16.4 16.3 16.2 16.1 16.0; do
+            if [ -d "/Applications/Xcode_$v.app" ]; then sudo xcode-select -s "/Applications/Xcode_$v.app"; break; fi
+          done
+          xcodebuild -version
+
+      - name: Get JUCE
+        run: git clone --depth 1 --branch 8.0.15 https://github.com/juce-framework/JUCE.git "juce/one shot sampler/JUCE"
+
+      - name: Configure
+        working-directory: juce/one shot sampler
+        run: cmake -B ci-build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DMODULAR_SKIP_DRIFT_FIX=ON
+
+      - name: Build
+        working-directory: juce/one shot sampler
+        shell: bash
+        run: |
+          set -o pipefail
+          cmake --build ci-build --config Release --parallel 4 2>&1 | grep -v 'deprecated\|note:\|\[\[deprecated\|\^\|^ *[0-9]* |\|^ *|' | tee build.log
+
+      - name: Package
+        working-directory: juce/one shot sampler
+        run: |
+          mkdir -p ../../out
+          cd ci-build/OneShotSampler_artefacts/Release
+          ls -R . | head -50
+          # Ad-hoc sign every bundle so macOS accepts it (free, no Apple account needed).
+          find . -maxdepth 2 \( -name "*.vst3" -o -name "*.component" -o -name "*.app" \) -print0 | while IFS= read -r -d '' b; do
+            codesign --force --deep --sign - "$b" && codesign --verify --verbose=2 "$b"
+          done
+          for d in VST3 AU Standalone; do
+            [ -d "$d" ] && ditto -c -k --sequesterRsrc --keepParent "$d" "$GITHUB_WORKSPACE/out/Modular-$d.zip"
+          done
+          ls -la "$GITHUB_WORKSPACE/out"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Modular-macOS
+          path: out/*.zip
