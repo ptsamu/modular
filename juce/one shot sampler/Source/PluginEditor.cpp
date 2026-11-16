@@ -437,14 +437,14 @@ namespace
     }
 }
 
-std::array<juce::Point<float>, 4> EnvelopePad::getHandles() const
+std::array<juce::Point<float>, 4> EnvelopePad::getHandles (int layer) const
 {
     const auto area = getGraphArea();
     const auto stage = area.getWidth() * envelopeStageShare;
-    const auto attackWidth = 5.0f + (stage - 5.0f) * envelopeProportion (parameters, audioProcessor.envelopeParamId (selectedLayer, "attack"));
-    const auto decayWidth = 5.0f + (stage - 5.0f) * envelopeProportion (parameters, audioProcessor.envelopeParamId (selectedLayer, "decay"));
-    const auto releaseWidth = 5.0f + (stage - 5.0f) * envelopeProportion (parameters, audioProcessor.envelopeParamId (selectedLayer, "release"));
-    const auto sustain = juce::jlimit (0.0f, 1.0f, parameters.getRawParameterValue (audioProcessor.envelopeParamId (selectedLayer, "sustain"))->load());
+    const auto attackWidth = 5.0f + (stage - 5.0f) * envelopeProportion (parameters, audioProcessor.envelopeParamId (layer, "attack"));
+    const auto decayWidth = 5.0f + (stage - 5.0f) * envelopeProportion (parameters, audioProcessor.envelopeParamId (layer, "decay"));
+    const auto releaseWidth = 5.0f + (stage - 5.0f) * envelopeProportion (parameters, audioProcessor.envelopeParamId (layer, "release"));
+    const auto sustain = juce::jlimit (0.0f, 1.0f, parameters.getRawParameterValue (audioProcessor.envelopeParamId (layer, "sustain"))->load());
     const auto peakX = area.getX() + attackWidth;
     const auto sustainY = area.getBottom() - area.getHeight() * sustain;
     return { juce::Point<float> (peakX, area.getY()),
@@ -457,7 +457,7 @@ void EnvelopePad::paint (juce::Graphics& g)
 {
     const auto bounds = getLocalBounds().toFloat();
     const auto area = getGraphArea();
-    const auto handles = getHandles();
+    const auto handles = getHandles (selectedLayer);
     const auto ink = modularInk;
     g.setColour (ink);
     g.drawRoundedRectangle (bounds.reduced (0.5f), 4.0f, 1.0f);
@@ -473,21 +473,27 @@ void EnvelopePad::paint (juce::Graphics& g)
     for (int y = static_cast<int> (area.getY()); y < area.getBottom(); y += 24)
         g.drawHorizontalLine (y, area.getX(), area.getRight());
 
-    juce::Path envelope;
     const juce::Point<float> start (area.getX(), area.getBottom());
-    const auto curve = [&envelope] (juce::Point<float> from, juce::Point<float> to)
+    const auto makePath = [start] (const std::array<juce::Point<float>, 4>& points)
     {
-        // Midpoint X gives linear time; this control point gives the same
-        // quadratic ease-out as CurvedEnvelope on the audio thread.
-        envelope.quadraticTo ((from.x + to.x) * 0.5f, to.y, to.x, to.y);
+        juce::Path path;
+        const auto curve = [&path] (juce::Point<float> from, juce::Point<float> to)
+        {
+            // Match the quadratic ease-out used by CurvedEnvelope.
+            path.quadraticTo ((from.x + to.x) * 0.5f, to.y, to.x, to.y);
+        };
+        path.startNewSubPath (start);
+        curve (start, points[0]);
+        curve (points[0], points[1]);
+        path.lineTo (points[2]);
+        curve (points[2], points[3]);
+        return path;
     };
-    envelope.startNewSubPath (start);
-    curve (start, handles[0]);
-    curve (handles[0], handles[1]);
-    envelope.lineTo (handles[2]);
-    curve (handles[2], handles[3]);
+    const auto stroke = juce::PathStrokeType (1.3f, juce::PathStrokeType::mitered, juce::PathStrokeType::rounded);
+    g.setColour (ink.withAlpha (0.44f));
+    g.strokePath (makePath (getHandles (1 - selectedLayer)), stroke);
     g.setColour (ink);
-    g.strokePath (envelope, juce::PathStrokeType (1.3f, juce::PathStrokeType::mitered, juce::PathStrokeType::rounded));
+    g.strokePath (makePath (handles), stroke);
 
     for (int i = 0; i < 3; ++i)
     {
@@ -531,7 +537,7 @@ void EnvelopePad::setParameter (const char* id, float value)
 
 void EnvelopePad::mouseDown (const juce::MouseEvent& event)
 {
-    const auto handles = getHandles();
+    const auto handles = getHandles (selectedLayer);
     draggedHandle = -1;
     auto closestDistance = 24.0f;
     for (int i = 0; i < 3; ++i)
@@ -547,7 +553,7 @@ void EnvelopePad::mouseDrag (const juce::MouseEvent& event)
     if (draggedHandle < 0)
         return;
     const auto area = getGraphArea();
-    const auto handles = getHandles();
+    const auto handles = getHandles (selectedLayer);
     const auto x = juce::jlimit (area.getX(), area.getRight(), event.position.x);
     const auto y = juce::jlimit (area.getY(), area.getBottom(), event.position.y);
     const auto stage = area.getWidth() * envelopeStageShare;
@@ -592,13 +598,18 @@ void EnvelopePad::timerCallback()
     repaint();
 }
 
+juce::String EqCurvePad::prefixForBand (int band) const
+{
+    return audioProcessor.fxParamId (audioProcessor.getEffectLayer (5), "eqBand" + juce::String (band + 1));
+}
+
 std::array<juce::Point<float>, 7> EqCurvePad::getHandles() const
 {
     const auto area = getLocalBounds().reduced (12).toFloat();
     std::array<juce::Point<float>, 7> handles;
     for (int band = 0; band < 7; ++band)
     {
-        const auto prefix = "eqBand" + juce::String (band + 1);
+        const auto prefix = prefixForBand (band);
         const auto frequency = parameters.getRawParameterValue (prefix + "Freq")->load();
         const auto response = getResponseAtFrequency (frequency);
         handles[(size_t) band] = { area.getX() + area.getWidth() * positionFromFrequency (frequency),
@@ -614,7 +625,7 @@ float EqCurvePad::getResponseAtFrequency (float frequency) const
     float responseDb = 0.0f;
     for (int band = 0; band < 7; ++band)
     {
-        const auto prefix = "eqBand" + juce::String (band + 1);
+        const auto prefix = prefixForBand (band);
         const auto bandFrequency = parameters.getRawParameterValue (prefix + "Freq")->load();
         const auto q = parameters.getRawParameterValue (prefix + "Q")->load();
         const auto gain = parameters.getRawParameterValue (prefix + "Gain")->load();
@@ -627,7 +638,7 @@ float EqCurvePad::getResponseAtFrequency (float frequency) const
 
 void EqCurvePad::setBand (int band, float frequency, float gain)
 {
-    const auto prefix = "eqBand" + juce::String (band + 1);
+    const auto prefix = prefixForBand (band);
     if (auto* parameter = parameters.getParameter (prefix + "Freq")) parameter->setValueNotifyingHost (parameter->convertTo0to1 (frequency));
     if (auto* parameter = parameters.getParameter (prefix + "Gain")) parameter->setValueNotifyingHost (parameter->convertTo0to1 (gain));
 }
@@ -656,21 +667,23 @@ void EqCurvePad::mouseDown (const juce::MouseEvent& event)
         menu.addSeparator(); menu.addItem (20, "RESET THIS BAND");
         menu.addSeparator(); menu.addItem (30, "frwk_eq001"); menu.addItem (31, "frwk_eq002");
         menu.addItem (32, "frwk_eq003"); menu.addItem (33, "frwk_eq004");
-        const auto property = "eqBand" + juce::String (draggedBand + 1) + "Type";
-        menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this), [this, property, band = draggedBand] (int choice)
+        const auto property = prefixForBand (draggedBand) + "Type";
+        menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this), [safe = juce::Component::SafePointer<EqCurvePad> (this), property, band = draggedBand, layer = audioProcessor.getEffectLayer (5)] (int choice)
         {
-            const auto set = [this] (const juce::String& id, float value) { if (auto* p = parameters.getParameter (id)) p->setValueNotifyingHost (p->convertTo0to1 (value)); };
+            if (safe == nullptr || safe->audioProcessor.getEffectLayer (5) != layer) return;
+            auto& parameters = safe->parameters;
+            const auto set = [&parameters] (const juce::String& id, float value) { if (auto* p = parameters.getParameter (id)) p->setValueNotifyingHost (p->convertTo0to1 (value)); };
             if (choice >= 1 && choice <= 6) parameters.state.setProperty (property, choice - 1, nullptr);
-            if (choice == 20) { const auto prefix = "eqBand" + juce::String (band + 1); set (prefix + "Gain", 0.0f); set (prefix + "Q", 0.8f); parameters.state.setProperty (property, 0, nullptr); }
+            if (choice == 20) { const auto prefix = safe->prefixForBand (band); set (prefix + "Gain", 0.0f); set (prefix + "Q", 0.8f); parameters.state.setProperty (property, 0, nullptr); }
             if (choice >= 30)
             {
                 const std::array<float, 7> frequencies { 60, 170, 450, 1100, 2800, 7000, 14000 };
                 const std::array<float, 7> warmth { 2.5f, 1.5f, 0.5f, -0.5f, -1.0f, 0.0f, 1.5f };
                 const std::array<float, 7> air { -1.0f, -0.5f, 0.0f, 0.5f, 1.5f, 3.0f, 4.5f };
-                for (int i = 0; i < 7; ++i) { const auto prefix = "eqBand" + juce::String (i + 1); set (prefix + "Freq", frequencies[(size_t) i]); set (prefix + "Gain", choice == 32 ? warmth[(size_t) i] : choice == 33 ? air[(size_t) i] : 0.0f); set (prefix + "Q", 0.8f); parameters.state.setProperty (prefix + "Type", 0, nullptr); }
-                if (choice == 31) { parameters.state.setProperty ("eqBand1Type", 2, nullptr); set ("eqBand1Freq", 90.0f); }
+                for (int i = 0; i < 7; ++i) { const auto prefix = safe->prefixForBand (i); set (prefix + "Freq", frequencies[(size_t) i]); set (prefix + "Gain", choice == 32 ? warmth[(size_t) i] : choice == 33 ? air[(size_t) i] : 0.0f); set (prefix + "Q", 0.8f); parameters.state.setProperty (prefix + "Type", 0, nullptr); }
+                if (choice == 31) { parameters.state.setProperty (safe->prefixForBand (0) + "Type", 2, nullptr); set (safe->prefixForBand (0) + "Freq", 90.0f); }
             }
-            repaint();
+            safe->repaint();
         });
         return;
     }
@@ -703,7 +716,7 @@ void EqCurvePad::mouseWheelMove (const juce::MouseEvent& event, const juce::Mous
         if (event.position.getDistanceFrom (handles[(size_t) i]) < event.position.getDistanceFrom (handles[(size_t) band])) band = i;
     if (event.position.getDistanceFrom (handles[(size_t) band]) > 26.0f)
         return;
-    const auto prefix = "eqBand" + juce::String (band + 1);
+    const auto prefix = prefixForBand (band);
     if (auto* parameter = parameters.getParameter (prefix + "Q"))
     {
         const auto current = parameter->convertFrom0to1 (parameter->getValue());
@@ -748,7 +761,7 @@ void EqCurvePad::paint (juce::Graphics& g)
     for (int band = 0; band < 7; ++band)
     {
         const auto point = handles[(size_t) band];
-        const auto prefix = "eqBand" + juce::String (band + 1);
+        const auto prefix = prefixForBand (band);
         const auto width = parameters.getRawParameterValue (prefix + "Q")->load();
         g.setColour (ink.withAlpha (0.10f)); g.fillEllipse (point.x - (22.0f / width), point.y - 14.0f, 44.0f / width, 28.0f);
         g.setColour (modularBlue); g.fillEllipse (point.x - 9.0f, point.y - 9.0f, 18.0f, 18.0f);
@@ -1084,7 +1097,7 @@ public:
         for (size_t i = 0; i < buttons.size(); ++i)
         {
             addAndMakeVisible (buttons[i]);
-            buttons[i].onClick = [this, i] { route->setValueAsCompleteGesture ((float) i); };
+            buttons[i].onClick = [this, i] { if (beforeRouteChanged) beforeRouteChanged(); route->setValueAsCompleteGesture ((float) i); if (onRouteChanged) onRouteChanged(); };
         }
         route = std::make_unique<juce::ParameterAttachment> (*owner.parameters.getParameter (owner.routeParamId (effect)),
             [this] (float value)
@@ -1097,6 +1110,8 @@ public:
         power.onClick = std::move (toggle);
         setInterceptsMouseClicks (false, true);
     }
+
+    std::function<void()> onRouteChanged, beforeRouteChanged;
 
     void setEffectOn (bool on)
     {
@@ -1112,7 +1127,7 @@ public:
         g.drawHorizontalLine (row.getY(), (float) row.getX(), (float) row.getRight());
         g.setColour (modularInk);
         g.setFont (juce::FontOptions (9.0f));
-        g.drawText ("Route", row.withTrimmedTop (3).withTrimmedBottom (5), juce::Justification::centredLeft);
+        g.drawText ("Edit layer", row.withTrimmedTop (3).withTrimmedBottom (5), juce::Justification::centredLeft);
     }
 
     void resized() override
@@ -1478,6 +1493,9 @@ OneShotSamplerAudioProcessorEditor::OneShotSamplerAudioProcessorEditor (OneShotS
     setupControl (decaySlider, decayLabel, "Decay");
     setupControl (sustainSlider, sustainLabel, "Sustain");
     setupControl (releaseSlider, releaseLabel, "Release");
+    // The tabs share the graph header; add them after the graph so they
+    // receive clicks instead of the envelope's drag surface.
+    addAndMakeVisible (envelopePad);
     for (size_t i = 0; i < envelopeTabs.size(); ++i)
     {
         envelopeTabs[i] = std::make_unique<BlueButton> (i == 0 ? "A" : "B");
@@ -1523,7 +1541,6 @@ OneShotSamplerAudioProcessorEditor::OneShotSamplerAudioProcessorEditor (OneShotS
     phaserFeedbackAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (audioProcessor.parameters, "phaserFeedback", phaserFeedbackSlider);
     phaserMixAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (audioProcessor.parameters, "phaserMix", phaserMixSlider);
 
-    addAndMakeVisible (envelopePad);
     for (size_t i = 0; i < sourceDecks.size(); ++i)
     {
         sourceDecks[i] = std::make_unique<SourceDeck> (processor, frameworksLookAndFeel, (int) i);
@@ -1539,6 +1556,18 @@ OneShotSamplerAudioProcessorEditor::OneShotSamplerAudioProcessorEditor (OneShotS
             sourceRoutes[i]->setEffectOn (isEffectEnabled (effect));
         });
         addAndMakeVisible (*sourceRoutes[i]);
+        sourceRoutes[i]->beforeRouteChanged = [this, i]
+        {
+            const auto effect = cardEffects[i];
+            const auto legacy = legacyFxEnabled (effect);
+            for (int layer = 0; layer < 2; ++layer)
+                if (auto* p = audioProcessor.parameters.getParameter (audioProcessor.fxParamId (layer, "layerFxOn" + juce::String (effect)));
+                    p != nullptr && p->getValue() == 0.0f)
+                {
+                    juce::ParameterAttachment attachment (*p, [] (float) {});
+                    attachment.setValueAsCompleteGesture (audioProcessor.isLayerFxOn (effect, layer, legacy) ? 2.0f : 1.0f);
+                }
+        };
     }
 
     for (auto* tab : { &samplerTab, &fxTab, &textureTab })
@@ -1577,8 +1606,15 @@ OneShotSamplerAudioProcessorEditor::OneShotSamplerAudioProcessorEditor (OneShotS
 
     const auto setParameter = [this] (const char* id, float value)
     {
-        if (auto* parameter = audioProcessor.parameters.getParameter (id))
-            parameter->setValueNotifyingHost (parameter->convertTo0to1 (value));
+        const juce::String name (id);
+        static constexpr std::array<const char*, 10> prefixes { "delay", "reverb", "chorus", "phaser", "flanger", "eq", "flutter", "granular", "harmony", "random" };
+        for (size_t effect = 0; effect < prefixes.size(); ++effect)
+            if (name.startsWith (prefixes[effect]))
+            {
+                if (auto* parameter = audioProcessor.parameters.getParameter (audioProcessor.fxParamId (audioProcessor.getEffectLayer ((int) effect), name)))
+                    parameter->setValueNotifyingHost (parameter->convertTo0to1 (value));
+                return;
+            }
     };
     delayPreset.onChange = [setParameter, this]
     {
@@ -1642,8 +1678,8 @@ OneShotSamplerAudioProcessorEditor::OneShotSamplerAudioProcessorEditor (OneShotS
         const std::array<float, 7> warmth { 1.8f, 1.1f, 0.4f, -0.7f, -1.1f, 0.3f, 1.3f };
         const std::array<float, 7> air { -1.5f, -0.8f, -0.2f, 0.4f, 1.2f, 2.6f, 3.8f };
         const auto preset = eqPreset.getSelectedId();
-        for (int i = 0; i < 7; ++i) { const auto prefix = "eqBand" + juce::String (i + 1); set (prefix + "Freq", frequencies[(size_t) i]); set (prefix + "Gain", preset == 3 ? warmth[(size_t) i] : preset == 4 ? air[(size_t) i] : 0.0f); set (prefix + "Q", i == 0 || i == 6 ? 0.65f : 0.9f); audioProcessor.parameters.state.setProperty (prefix + "Type", i == 0 ? 4 : i == 6 ? 5 : 0, nullptr); }
-        if (preset == 2) { audioProcessor.parameters.state.setProperty ("eqBand1Type", 2, nullptr); set ("eqBand1Freq", 95.0f); set ("eqBand1Q", 0.72f); }
+        for (int i = 0; i < 7; ++i) { const auto prefix = audioProcessor.fxParamId (audioProcessor.getEffectLayer (5), "eqBand" + juce::String (i + 1)); set (prefix + "Freq", frequencies[(size_t) i]); set (prefix + "Gain", preset == 3 ? warmth[(size_t) i] : preset == 4 ? air[(size_t) i] : 0.0f); set (prefix + "Q", i == 0 || i == 6 ? 0.65f : 0.9f); audioProcessor.parameters.state.setProperty (prefix + "Type", i == 0 ? 4 : i == 6 ? 5 : 0, nullptr); }
+        if (preset == 2) { const auto prefix = audioProcessor.fxParamId (audioProcessor.getEffectLayer (5), "eqBand1"); audioProcessor.parameters.state.setProperty (prefix + "Type", 2, nullptr); set (prefix + "Freq", 95.0f); set (prefix + "Q", 0.72f); }
         eqCurvePad.repaint();
     };
     flangerPreset.onChange = [setParameter, this]
@@ -1674,9 +1710,13 @@ OneShotSamplerAudioProcessorEditor::OneShotSamplerAudioProcessorEditor (OneShotS
                                 : effect == 7 ? &granularPreset
                                 : effect == 2 ? &chorusPreset
                                 : effect == 9 ? &randomPreset : &reverbPreset;
-        source->setSelectedId (preset + 1, juce::sendNotificationSync);
+        audioProcessor.parameters.state.setProperty (presetBankKey (effect), preset, nullptr);
+        source->setSelectedId (preset + 1, juce::dontSendNotification);
+        if (source->onChange) source->onChange();
         selectEffect (effect);
     };
+    for (auto& route : sourceRoutes)
+        route->onRouteChanged = [this] { syncFxBanks(); };
     presetSelector.setAlwaysOnTop (true);
     addAndMakeVisible (presetSelector);
 
@@ -1950,14 +1990,9 @@ void OneShotSamplerAudioProcessorEditor::paint (juce::Graphics& g)
     g.setColour (ink.withAlpha (0.60f)); g.drawLine ((float) beta2OutputBounds.getX() + 20.0f, (float) beta2OutputBounds.getY() + 87.0f, (float) beta2OutputBounds.getX() + 143.0f, (float) beta2OutputBounds.getY() + 87.0f, 1.0f);
 
 
-    // The active module gets a different compact visual for each engine.
-    auto moduleInner = beta2ModuleBounds.reduced (16);
-    const std::array<juce::String, 10> moduleNames { "Ping pong delay", "Reverb", "Chorus", "Phaser", "Flanger", "EQ", "Flutter", "Granular", "Orbit", "Random" };
-    const auto moduleName = selectedFx >= 0 && selectedFx < (int) moduleNames.size() ? moduleNames[(size_t) selectedFx] : "REVERB";
-    g.setColour (ink); g.setFont (font (10.0f));
-    g.drawText ("Selected effect", moduleInner.removeFromTop (18), juce::Justification::centredLeft);
-    g.drawText (moduleName, beta2ModuleBounds.getX() + 118, beta2ModuleBounds.getY() + 20, beta2ModuleBounds.getWidth() - 138, 18, juce::Justification::centredLeft);
-    g.setFont (font (20.0f)); g.drawText (selectedFx == 5 ? "7-band EQ" : selectedFx == 7 ? "Grain field" : selectedFx == 9 ? "Chance field" : selectedFx == 2 ? "Detune field" : "Space", beta2ModuleBounds.getX() + 22, beta2ModuleBounds.getY() + 51, beta2ModuleBounds.getWidth() - 44, 26, juce::Justification::centredLeft);
+    g.setColour (ink); g.setFont (font (16.0f));
+    g.drawText (showOffsetEq ? "7-band EQ" : showSidechain ? "Sidechain / Sync" : "Layer offset", beta2ModuleBounds.reduced (20).removeFromTop (24),
+                juce::Justification::centredLeft);
 
 
 }
@@ -1991,69 +2026,135 @@ juce::Rectangle<int> OneShotSamplerAudioProcessorEditor::cardVisualRect (size_t 
     return inner.removeFromTop (72).reduced (7, 6);
 }
 
+std::array<float, 3> OneShotSamplerAudioProcessorEditor::cardIconValues (size_t card)
+{
+    const auto position = [] (juce::Slider& s) { return (float) s.valueToProportionOfLength (s.getValue()); };
+    switch (card)
+    {
+        case 0: return { position (reverbRoomSizeSlider), position (reverbDampingSlider), position (reverbWidthSlider) };
+        case 1: return { position (granularSizeSlider), position (granularDensitySlider), position (granularPitchSlider) };
+        case 2: return { position (randomAmountSlider), position (randomRateSlider), position (randomMixSlider) };
+        case 3: return { position (chorusRateSlider), position (chorusDepthSlider), position (chorusDelaySlider) };
+        default: return { position (eqLowSlider), position (eqMidSlider), position (eqHighSlider) };
+    }
+}
+
 void OneShotSamplerAudioProcessorEditor::drawCardLive (juce::Graphics& g, size_t i)
 {
-    const auto blue = modularBlue; const auto ink = modularInk;
-    [[maybe_unused]] const auto font = [] (float size) { return juce::Font ("Helvetica", size, juce::Font::plain); };
-    [[maybe_unused]] const auto motion = fxVisualPhase * juce::MathConstants<float>::twoPi;
-    juce::ignoreUnused (blue, ink);
-    const auto enabled = isEffectEnabled (cardEffects[i]);
-    const auto cardInk = ink;
-    const auto visual = cardVisualRect (i);
-        g.setColour (cardInk.withMultipliedAlpha (0.9f));
-        g.drawRoundedRectangle (visual.toFloat().reduced (0.5f), 6.0f, 1.0f);
-        g.setColour (cardInk);
-        const auto visualCentre = visual.getCentre().toFloat();
-        // All card loops are sine-based and phase-continuous. There is no
-        // reset frame or coordinate wrap, so they can run indefinitely with
-        // no visual "click" at the end of a cycle.
-        const auto visualMotion = enabled ? motion : 0.0f;
-        // Audio energy controls the scale of every engine's motion. The
-        // underlying phase remains continuous, but the board visibly wakes
-        // up when the instrument is actually producing sound.
-        const auto signalResponse = 0.26f + visualSignalLevel * 0.74f;
-        if (i == 0) // space: source, expanding rings, wall reflections
-        {
-            drawSpaceRoom (g, visual.toFloat().reduced (3.0f), enabled ? (float) visualSeconds : 0.0f,
-                           visualSignalLevel, cardInk);
-        }
-        else if (i == 1) // grain field
-        {
-            for (int dot = 0; dot < 10; ++dot)
-            {
-                const auto x = visualCentre.x + std::sin ((float) dot * 1.91f + visualMotion * (0.6f + (dot % 4) * 0.12f)) * (visual.getWidth() * 0.39f * signalResponse);
-                const auto y = visualCentre.y + std::cos ((float) dot * 1.27f + visualMotion * (0.8f + (dot % 3) * 0.17f)) * ((dot % 3) * 5.0f + 4.0f) * signalResponse;
-                g.fillEllipse (x, y, 2.5f, 2.5f);
-            }
-        }
-        else if (i == 2) // controlled stochastic path
-        {
-            juce::Path p; p.startNewSubPath ((float) visual.getX(), visualCentre.y);
-            for (int x = 0; x <= visual.getWidth(); x += 9)
-                p.lineTo ((float) visual.getX() + x, visualCentre.y + std::sin ((float) x * .20f + visualMotion * 5.0f) * (7.0f + (x % 4) * 2.0f) * signalResponse);
-            g.strokePath (p, juce::PathStrokeType (1.0f));
-        }
-        else if (i == 3) // detuned lines
-        {
-            for (int line = -1; line <= 1; ++line)
-            {
-                juce::Path p; p.startNewSubPath ((float) visual.getX(), visualCentre.y + line * 6.0f);
-                for (int x = 0; x < visual.getWidth(); x += 7)
-                    p.lineTo ((float) visual.getX() + x, visualCentre.y + line * 6.0f + std::sin ((float) x * .10f + visualMotion * (2.0f + line * .15f)) * 4.0f * signalResponse);
-                g.strokePath (p, juce::PathStrokeType (1.0f));
-            }
-        }
-        else // spectrum columns
-        {
-            for (int bar = 0; bar < 11; ++bar)
-            {
-                const auto height = 6.0f + (1.0f + std::sin (visualMotion * 5.0f + bar * .8f)) * 11.0f * signalResponse;
-                const auto x = (float) visual.getX() + 11.0f + bar * (float) (visual.getWidth() - 22) / 10.0f;
-                g.drawLine (x, visualCentre.y + height * .5f, x, visualCentre.y - height * .5f, 1.0f);
-            }
-        }
+    const auto values = cardIconValues (i);
+    const auto live = isEffectEnabled (cardEffects[i]);
+    const auto phase = visualSeconds * juce::MathConstants<double>::twoPi;
+    const auto energy = live ? 0.35f + 0.65f * visualSignalLevel : 0.0f;
+    const auto motion = [phase, energy] (double hz, float depth, double offset = 0.0)
+    {
+        return energy * depth * (float) std::sin (phase * hz + offset);
+    };
+    const auto frame = cardVisualRect (i).toFloat().reduced (0.5f);
+    const auto c = frame.getCentre();
+    const auto ink = modularInk;
+    g.setColour (ink.withAlpha (0.76f));
+    g.drawRoundedRectangle (frame, 6.0f, 0.9f);
 
+    juce::Graphics::ScopedSaveState save (g);
+    // Symbols are centered with padding; use a cheap rectangular clip as a
+    // backstop rather than rasterizing a rounded mask every animation frame.
+    g.reduceClipRegion (frame.reduced (5.0f).getSmallestIntegerContainer());
+    if (i >= 3)
+        g.addTransform (juce::AffineTransform::scale (1.48f, 1.38f, c.x, c.y));
 
+    const juce::PathStrokeType stroke (1.7f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded);
+    juce::Path symbol;
+    g.setColour (ink);
+
+    if (i == 0) // A narrow impulse opens into a fan of echoes.
+    {
+        const auto reach = 31.0f + 15.0f * values[0];
+        const auto spread = 5.0f + 7.0f * values[2];
+        const auto start = c.x - reach * 0.5f;
+        g.fillEllipse (start - 2.1f, c.y - 2.1f, 4.2f, 4.2f);
+        for (int echo = 0; echo < 3; ++echo)
+        {
+            const auto x = start + 10.0f + echo * (reach / 3.2f) + motion (0.54, 3.0f, -echo * 0.8);
+            const auto height = spread * (0.52f + echo * 0.30f) + motion (0.54, 1.7f, -echo * 0.8);
+            juce::Path arc;
+            arc.startNewSubPath (x - 3.0f, c.y - height);
+            arc.quadraticTo (x + 9.0f, c.y, x - 3.0f, c.y + height);
+            g.setColour (ink.withAlpha (1.0f - echo * (0.12f + 0.16f * values[1])));
+            g.strokePath (arc, stroke);
+        }
+    }
+    else if (i == 1) // A wave broken into three clusters of grains.
+    {
+        const auto spacing = 12.0f + 6.0f * values[0];
+        const auto lift = (values[2] - 0.5f) * 10.0f;
+        for (int cluster = -1; cluster <= 1; ++cluster)
+        {
+            const auto x = c.x + cluster * spacing + motion (0.66, 3.0f, cluster * 1.8);
+            const auto centreY = c.y - cluster * lift + motion (0.74, 4.0f, cluster * 1.6);
+            for (int grain = -1; grain <= 1; ++grain)
+            {
+                const auto height = (grain == 0 ? 19.0f : 9.0f) * (0.65f + values[1] * 0.45f);
+                g.fillRoundedRectangle (x + grain * 4.5f - 1.2f, centreY - height * 0.5f, 2.4f, height, 1.2f);
+            }
+        }
+    }
+    else if (i == 2) // Three possible branches; one moving choice marker.
+    {
+        const auto height = 8.0f + 7.0f * values[0];
+        const auto split = c.x - 12.0f;
+        const auto end = c.x + 24.0f;
+        symbol.startNewSubPath (c.x - 28.0f, c.y);
+        symbol.lineTo (end, c.y);
+        for (int branch : { -1, 1 })
+        {
+            symbol.startNewSubPath (split, c.y);
+            symbol.cubicTo (c.x, c.y, c.x + 2.0f, c.y + branch * height, end, c.y + branch * height);
+            g.drawEllipse (end + 1.0f, c.y + branch * height - 2.0f, 4.0f, 4.0f, 1.1f);
+        }
+        g.drawEllipse (end + 1.0f, c.y - 2.0f, 4.0f, 4.0f, 1.1f);
+        const auto dot = 3.0f + 2.0f * values[2];
+        g.fillEllipse (c.x + 5.0f + motion (0.30 + 0.60 * values[1], 10.0f) - dot * 0.5f,
+                       c.y - dot * 0.5f, dot, dot);
+    }
+    else if (i == 3) // Two offset voices.
+    {
+        const auto separation = 2.5f + 7.0f * values[1];
+        for (int voice : { -1, 1 })
+            for (int step = 0; step <= 28; ++step)
+            {
+                const auto t = (float) step / 28.0f;
+                const auto y = c.y + voice * separation * 0.5f
+                    + std::sin (t * (6.3f + 4.0f * values[0]) + voice * values[2]
+                               + motion (0.65, 1.3f, voice * 0.8)) * 5.0f;
+                if (step == 0) symbol.startNewSubPath (c.x - 27.0f, y);
+                else symbol.lineTo (c.x - 27.0f + 54.0f * t, y);
+            }
+    }
+    else // Keep the EQ curve honest; only the anchor glow reacts to audio.
+    {
+        const auto y = [&] (size_t n) { return c.y + (0.5f - values[n]) * 29.0f; };
+        symbol.startNewSubPath (c.x - 28.0f, y (0));
+        symbol.lineTo (c.x - 17.0f, y (0));
+        symbol.cubicTo (c.x - 9.0f, y (0), c.x - 8.0f, y (1), c.x, y (1));
+        symbol.cubicTo (c.x + 8.0f, y (1), c.x + 9.0f, y (2), c.x + 17.0f, y (2));
+        symbol.lineTo (c.x + 28.0f, y (2));
+        for (size_t n = 0; n < values.size(); ++n)
+        {
+            const auto x = c.x + ((float) n - 1.0f) * 17.0f;
+            const auto radius = live ? visualSignalLevel * (2.0f + 0.6f * (float) std::sin (phase * 0.65 + (double) n)) : 0.0f;
+            if (radius > 0.2f)
+            {
+                g.setColour (ink.withAlpha (0.25f));
+                g.drawEllipse (x - 1.8f - radius, y (n) - 1.8f - radius, 3.6f + 2.0f * radius, 3.6f + 2.0f * radius, 0.8f);
+            }
+            g.setColour (ink);
+            g.fillEllipse (x - 1.8f, y (n) - 1.8f, 3.6f, 3.6f);
+        }
+    }
+
+    g.setColour (ink);
+    if (! symbol.isEmpty())
+        g.strokePath (symbol, stroke);
 }
 
 void OneShotSamplerAudioProcessorEditor::drawScopeLive (juce::Graphics& g)
@@ -2185,128 +2286,95 @@ void OneShotSamplerAudioProcessorEditor::drawLimiterLive (juce::Graphics& g)
     g.setFont (font (9.0f)); g.drawText ("Soft-clip protection", limiter.getX() + 12, limiter.getY() + 130, limiter.getWidth() - 24, 15, juce::Justification::centred);
 }
 
+
+void OneShotSamplerAudioProcessorEditor::DuckThumbnail::paintButton (juce::Graphics& g, bool hover, bool down)
+{
+    const auto box = getLocalBounds().toFloat().reduced (0.5f);
+    const auto selected = getToggleState();
+    g.setColour (modularInk.withAlpha (selected ? 0.95f : hover || down ? 0.25f : 0.6f));
+    if (selected || hover || down) g.fillRoundedRectangle (box, 3.5f);
+    else g.drawRoundedRectangle (box, 3.5f, 0.7f);
+    const auto plot = box.reduced (3.0f);
+    if (plot.isEmpty()) return;
+    juce::Path curve;
+    for (int i = 0; i <= 48; ++i)
+    {
+        const auto t = i / 48.0f;
+        const auto x = plot.getX() + plot.getWidth() * t;
+        const auto y = plot.getBottom() - plot.getHeight() * OneShotSamplerAudioProcessor::duckCurve (t, shape);
+        if (i == 0) curve.startNewSubPath (x, y); else curve.lineTo (x, y);
+    }
+    g.setColour (selected ? modularBlue : modularInk);
+    g.strokePath (curve, juce::PathStrokeType (0.9f));
+}
+
 void OneShotSamplerAudioProcessorEditor::drawModuleLive (juce::Graphics& g)
 {
-    const auto blue = modularBlue; const auto ink = modularInk;
-    [[maybe_unused]] const auto font = [] (float size) { return juce::Font ("Helvetica", size, juce::Font::plain); };
-    const auto running = isEffectEnabled (selectedFx);
-    const auto motion = running ? fxVisualPhase * juce::MathConstants<float>::twoPi : 0.0f;
-    const auto timeSeconds = running ? visualSeconds : 0.0;
-    const auto signal = running ? visualSignalLevel : 0.0f;
-    juce::ignoreUnused (blue, ink);
-    const auto moduleVisual = moduleVisualRect();
-    const auto drawGrid = [&g] (juce::Rectangle<int> area, juce::Colour colour, int step = 30)
+    const auto area = moduleView.getBounds().toFloat().reduced (0.5f);
+    if (area.isEmpty()) return;
+    if (showSidechain)
     {
-        g.setColour (colour);
-        for (int x = area.getX(); x < area.getRight(); x += step) g.drawVerticalLine (x, (float) area.getY(), (float) area.getBottom());
-        for (int y = area.getY(); y < area.getBottom(); y += step) g.drawHorizontalLine (y, (float) area.getX(), (float) area.getRight());
-    };
-    g.setColour (ink); g.drawRoundedRectangle (moduleVisual.toFloat().reduced (0.5f), 4.0f, 1.0f);
-    const auto visualCentre = moduleVisual.getCentre().toFloat();
-    if (selectedFx == 7)
-    {
-        // Grain field: grains are outlined circles resting on a quiet line
-        // lattice. The live grain carries a centre dot and a ring that breathes
-        // with the output level.
-        const auto field = moduleVisual.reduced (12).toFloat();
-        constexpr int rows = 3;
-        const auto rowSpacing = field.getHeight() / (float) rows;
-        const float columns[5] = { 0.10f, 0.30f, 0.52f, 0.74f, 0.92f };
-        g.setColour (ink.withAlpha (0.30f));
-        for (int row = 0; row < rows; ++row)
-            g.drawHorizontalLine ((int) (field.getY() + rowSpacing * ((float) row + 0.5f)), field.getX(), field.getRight());
-        for (const auto column : columns)
-            g.drawVerticalLine ((int) (field.getX() + field.getWidth() * column), field.getY(), field.getBottom());
-
-        const int grainColumn[10] = { 0, 1, 3, 4, 0, 3, 4, 1, 2, 4 };
-        const int grainRow[10]    = { 0, 0, 0, 0, 1, 1, 1, 2, 2, 2 };
-        const float grainSize[10] = { 0.55f, 0.95f, 0.45f, 0.75f, 0.45f, 0.95f, 0.45f, 0.75f, 0.45f, 0.95f };
-        const auto unit = rowSpacing * 0.46f;
-        for (int grain = 0; grain < 10; ++grain)
+        g.setColour (modularInk.withAlpha (0.65f));
+        g.drawRoundedRectangle (area, 5.0f, 1.0f);
+        const auto graph = area.reduced (9.0f, 8.0f);
+        for (int i = 1; i < 4; ++i)
+            g.drawVerticalLine (juce::roundToInt (graph.getX() + graph.getWidth() * i / 4.0f), graph.getY(), graph.getBottom());
+        juce::Path p;
+        const auto handles = audioProcessor.duckHandles (duckTiming);
+        for (int i = 0; i <= 80; ++i)
         {
-            const auto cx = field.getX() + field.getWidth() * columns[grainColumn[grain]];
-            const auto cy = field.getY() + rowSpacing * ((float) grainRow[grain] + 0.5f);
-            const auto r = unit * grainSize[grain];
-            g.setColour (blue); g.fillEllipse (cx - r, cy - r, r * 2.0f, r * 2.0f);
-            g.setColour (ink); g.drawEllipse (cx - r, cy - r, r * 2.0f, r * 2.0f, 1.0f);
+            const auto t = i / 80.0f;
+            const auto y = graph.getBottom() - graph.getHeight() * audioProcessor.editedDuckCurve (
+                audioProcessor.duckWarp (t, handles), duckShapeIndex, duckLevels);
+            if (i == 0) p.startNewSubPath (graph.getX(), y);
+            else p.lineTo (graph.getX() + graph.getWidth() * t, y);
         }
-        const auto liveX = field.getX() + field.getWidth() * columns[2];
-        const auto liveY = field.getY() + rowSpacing * 1.5f;
-        const auto liveR = unit * 1.15f;
-        const auto ringR = liveR * 1.45f + signal * 4.0f + 1.8f * (0.5f + 0.5f * std::sin (motion * 3.0f));
-        g.setColour (ink.withAlpha (0.45f)); g.drawEllipse (liveX - ringR, liveY - ringR, ringR * 2.0f, ringR * 2.0f, 1.0f);
-        g.setColour (blue); g.fillEllipse (liveX - liveR, liveY - liveR, liveR * 2.0f, liveR * 2.0f);
-        g.setColour (ink); g.drawEllipse (liveX - liveR, liveY - liveR, liveR * 2.0f, liveR * 2.0f, 1.0f);
-        g.fillEllipse (liveX - 2.5f, liveY - 2.5f, 5.0f, 5.0f);
+        g.setColour (modularInk);
+        g.strokePath (p, juce::PathStrokeType (1.5f));
+        for (size_t i = 0; i < handles.size(); ++i)
+        {
+            const auto x = graph.getX() + graph.getWidth() * handles[i];
+            const auto y = graph.getBottom() - graph.getHeight() * audioProcessor.editedDuckCurve (
+                0.25f * (i + 1), duckShapeIndex, duckLevels);
+            g.fillEllipse (x - 4.0f, y - 4.0f, 8.0f, 8.0f);
+        }
+        return;
     }
-    else
+    const auto laneHeight = area.getHeight() * 0.5f;
+    const auto delta = offsetSlider.getValue();
+    const auto zero = area.getX() + area.getWidth() * 0.43f;
+    g.setColour (modularInk.withAlpha (0.6f));
+    g.drawRoundedRectangle (area, 5.0f, 1.0f);
+    g.drawHorizontalLine (juce::roundToInt (area.getCentreY()), area.getX() + 4, area.getRight() - 4);
+    g.drawVerticalLine (juce::roundToInt (zero), area.getY() + 3, area.getBottom() - 3);
+    g.setFont (juce::FontOptions (11.0f));
+    for (size_t layer = 0; layer < 2; ++layer)
     {
-        if (selectedFx != 5)
-            drawGrid (moduleVisual.reduced (12), ink.withAlpha (0.22f), 25);
-        g.setColour (ink);
-        if (selectedFx == 5)
+        const auto top = area.getY() + laneHeight * (float) layer;
+        const auto centre = top + laneHeight * 0.5f;
+        g.setColour (modularInk);
+        g.drawText (layer == 0 ? "A" : "B", juce::Rectangle<float> (area.getX() + 9, top, 16, laneHeight),
+                    juce::Justification::centredLeft);
+        const auto& peaks = offsetPeaks[layer];
+        if (peaks.empty())
         {
-            // The interactive EQ pad owns this whole rectangle.
+            g.setColour (modularInk.withAlpha (0.75f));
+            g.drawText ("No sample", juce::Rectangle<float> (area.getX() + 29, top, area.getWidth() - 38, laneHeight),
+                        juce::Justification::centredLeft);
+            continue;
         }
-        else if (selectedFx == 2)
+        const auto start = zero + (layer == 1 ? (float) delta * area.getWidth() * 0.005f : 0.0f);
+        const auto width = area.getWidth() * 0.33f;
+        juce::Path wave;
+        for (int i = 0; i < 96; ++i)
         {
-            // Detune field: four copies of one wave, each drifting slightly apart.
-            const auto field = moduleVisual.reduced (12).toFloat();
-            const auto time = (float) timeSeconds;
-            for (int voice = 0; voice < 4; ++voice)
-            {
-                juce::Path wave;
-                const auto detune = 1.0f + ((float) voice - 1.5f) * 0.045f;
-                for (int step = 0; step <= 48; ++step)
-                {
-                    const auto t = (float) step / 48.0f;
-                    const auto point = juce::Point<float> (field.getX() + t * field.getWidth(),
-                                                           field.getCentreY() + std::sin (t * 12.0f * detune + time * (1.2f + 0.15f * (float) voice)) * field.getHeight() * 0.32f);
-                    if (step == 0) wave.startNewSubPath (point); else wave.lineTo (point);
-                }
-                g.setColour (ink.withAlpha (0.35f + 0.65f * (float) voice / 3.0f));
-                g.strokePath (wave, juce::PathStrokeType (1.0f));
-            }
+            const auto p = peaks[(size_t) i * peaks.size() / 96];
+            const auto x = start + width * (float) i / 95.0f;
+            const auto amplitude = juce::jlimit (0.0f, 1.0f, p) * laneHeight * 0.4f;
+            wave.startNewSubPath (x, centre - amplitude);
+            wave.lineTo (x, centre + amplitude);
         }
-        else if (selectedFx == 9)
-        {
-            // Ease between successive deterministic chance states.
-            const auto field = moduleVisual.reduced (12).toFloat();
-            const auto clock = timeSeconds * 3.5;
-            const auto tick = (unsigned int) clock;
-            const auto fraction = (float) (clock - tick);
-            const auto blend = fraction * fraction * (3.0f - 2.0f * fraction);
-            constexpr int stepsAcross = 14;
-            juce::Path steps;
-            for (int step = 0; step < stepsAcross; ++step)
-            {
-                const auto levelAt = [](unsigned int index)
-                {
-                    const auto seed = index * 2654435761u;
-                    return (float) ((seed >> 8) & 1023) / 1023.0f;
-                };
-                const auto first = levelAt (tick + (unsigned int) step);
-                const auto value = first + blend * (levelAt (tick + (unsigned int) step + 1u) - first);
-                const auto x0 = field.getX() + field.getWidth() * (float) step / (float) stepsAcross;
-                const auto x1 = field.getX() + field.getWidth() * (float) (step + 1) / (float) stepsAcross;
-                const auto y = field.getBottom() - value * field.getHeight();
-                if (step == 0) steps.startNewSubPath (x0, y); else steps.lineTo (x0, y);
-                steps.lineTo (x1, y);
-            }
-            g.setColour (ink);
-            g.strokePath (steps, juce::PathStrokeType (1.2f));
-        }
-        else if (selectedFx == 1)
-        {
-            drawSpaceRoom (g, moduleVisual.toFloat().reduced (10.0f), (float) timeSeconds, signal, ink);
-        }
-        else
-        {
-            for (int r = 1; r < 5; ++r) g.drawEllipse (visualCentre.x - r * 19.0f, visualCentre.y - r * 11.0f, r * 38.0f, r * 22.0f, 0.9f);
-            g.drawLine ((float) moduleVisual.getX() + 18.0f, visualCentre.y, (float) moduleVisual.getRight() - 18.0f, visualCentre.y, 0.9f);
-        }
-        if (selectedFx != 1 && selectedFx != 2 && selectedFx != 9 && selectedFx != 5)
-            g.fillEllipse (visualCentre.x - 3.0f, visualCentre.y - 3.0f, 6.0f, 6.0f);
+        g.strokePath (wave, juce::PathStrokeType (1.0f));
     }
 }
 
@@ -2341,7 +2409,45 @@ void OneShotSamplerAudioProcessorEditor::drawFooterLive (juce::Graphics& g)
 void OneShotSamplerAudioProcessorEditor::layoutLiveViews()
 {
     scopeView.setBounds (scopeRect());
-    moduleView.setBounds (moduleVisualRect());
+    auto panel = beta2ModuleBounds.reduced (20);
+    auto header = panel.removeFromTop (27);
+    panelMode.setBounds (header.removeFromRight (72).reduced (4, 0));
+    duckOn.setBounds (header.removeFromRight (48));
+    panel.removeFromTop (5);
+    auto footer = panel.removeFromBottom (29);
+    auto duckFooter = footer;
+    for (auto& choice : duckChoices)
+        choice.setBounds (duckFooter.removeFromLeft (footer.getWidth() / 4).reduced (2, 2));
+    offsetReset.setBounds (footer.removeFromRight (50).reduced (0, 3));
+    offsetSlider.setBounds (footer.withTrimmedRight (10));
+    eqCurvePad.setBounds (panel);
+    if (showSidechain && ! showOffsetEq)
+    {
+        const auto strip = panel.removeFromBottom (23);
+        panel.removeFromBottom (3);
+        const auto count = (int) duckThumbnails.size();
+        for (int i = 0; i < count; ++i)
+        {
+            const auto x = strip.getX() + strip.getWidth() * i / count;
+            const auto right = strip.getX() + strip.getWidth() * (i + 1) / count;
+            duckThumbnails[(size_t) i].setBounds (juce::Rectangle<int> (x, strip.getY(), right - x, strip.getHeight()).reduced (1));
+        }
+        auto mix = panel.removeFromRight (82).withTrimmedLeft (6);
+        duckMixLabel.setBounds (mix.removeFromBottom (14));
+        duckDepth.setBounds (mix);
+    }
+    moduleView.setBounds (panel.withTrimmedBottom (4));
+    moduleView.setVisible (! showOffsetEq);
+    offsetSlider.setVisible (! showOffsetEq && ! showSidechain);
+    offsetReset.setVisible (! showOffsetEq && ! showSidechain);
+    panelMode.setVisible (true);
+    duckOn.setVisible (! showOffsetEq && showSidechain);
+    duckDepth.setVisible (! showOffsetEq && showSidechain);
+    duckMixLabel.setVisible (! showOffsetEq && showSidechain);
+    moduleView.setMouseCursor (showSidechain ? juce::MouseCursor::DraggingHandCursor : juce::MouseCursor::NormalCursor);
+    for (auto& choice : duckChoices) choice.setVisible (! showOffsetEq && showSidechain);
+    for (auto& tile : duckThumbnails) tile.setVisible (! showOffsetEq && showSidechain);
+    eqCurvePad.setVisible (showOffsetEq);
     footerView.setBounds (footerRect());
     limiterView.setBounds (limiterRect());
     for (size_t i = 0; i < cardViews.size(); ++i) cardViews[i].setBounds (cardVisualRect (i));
@@ -2354,6 +2460,151 @@ void OneShotSamplerAudioProcessorEditor::setupLiveViews()
     { view.background = std::move (bg); view.draw = std::move (draw); addAndMakeVisible (view); view.toBack(); };
     add (scopeView, [blue] { return blue; }, [this] (juce::Graphics& g) { drawScopeLive (g); });
     add (moduleView, [blue] { return blue; }, [this] (juce::Graphics& g) { drawModuleLive (g); });
+    offsetSlider.setSliderStyle (juce::Slider::LinearHorizontal);
+    offsetSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 66, 22);
+    offsetSlider.setTextValueSuffix (" ms");
+    offsetSlider.setColour (juce::Slider::thumbColourId, modularInk);
+    offsetSlider.setColour (juce::Slider::trackColourId, modularInk.withAlpha (0.65f));
+    offsetSlider.setColour (juce::Slider::textBoxTextColourId, modularInk);
+    offsetSlider.setTitle ("Layer B timing relative to A");
+    offsetSlider.onValueChange = [this] { moduleView.repaint(); };
+    offsetAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
+        audioProcessor.parameters, "layerOffsetMs", offsetSlider);
+    addAndMakeVisible (offsetSlider);
+    for (auto* button : { &offsetReset, &panelMode })
+    {
+        button->setColour (juce::TextButton::buttonColourId, modularBlue.brighter (0.13f));
+        button->setColour (juce::TextButton::textColourOffId, modularInk);
+        addAndMakeVisible (*button);
+    }
+    offsetReset.onClick = [this] { offsetSlider.setValue (0, juce::sendNotificationSync); };
+    panelMode.onClick = [this]
+    {
+        if (showOffsetEq) showOffsetEq = false;
+        else showSidechain = ! showSidechain;
+        panelMode.setButtonText (showSidechain ? "Offset" : "Sidechain");
+        layoutLiveViews();
+        moduleView.repaint();
+        repaint (beta2ModuleBounds);
+    };
+    duckOn.setColour (juce::ToggleButton::textColourId, modularInk);
+    addAndMakeVisible (duckOn);
+    duckOnLink = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (audioProcessor.parameters, "duckOn", duckOn);
+    configureKnobDrag (duckDepth);
+    duckDepth.setSliderStyle (juce::Slider::RotaryVerticalDrag);
+    duckDepth.setLookAndFeel (&frameworksLookAndFeel);
+    duckDepth.setName ("engineDial");
+    duckDepth.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 48, 13);
+    duckDepth.setTitle ("Sidechain mix");
+    duckDepth.setTextValueSuffix ("%");
+    duckDepth.setColour (juce::Slider::textBoxTextColourId, modularInk);
+    duckDepth.setColour (juce::Slider::thumbColourId, modularInk);
+    addAndMakeVisible (duckDepth);
+    duckMixLabel.setText ("Mix", juce::dontSendNotification);
+    duckMixLabel.setJustificationType (juce::Justification::centred);
+    duckMixLabel.setFont (juce::FontOptions (11.0f));
+    duckMixLabel.setColour (juce::Label::textColourId, modularInk);
+    addAndMakeVisible (duckMixLabel);
+    duckDepthLink = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (audioProcessor.parameters, "duckDepth", duckDepth);
+    const std::array<const char*, 3> timingIds { "duckEarly", "duckMidpoint", "duckLate" };
+    for (size_t i = 0; i < timingIds.size(); ++i)
+    {
+        duckTimingLinks[i] = std::make_unique<juce::ParameterAttachment> (*audioProcessor.parameters.getParameter (timingIds[i]),
+            [this, i] (float value) { duckTiming[i] = value; moduleView.repaint(); });
+        duckTimingLinks[i]->sendInitialUpdate();
+        duckLevelLinks[i] = std::make_unique<juce::ParameterAttachment> (
+            *audioProcessor.parameters.getParameter ("duckLevel" + juce::String ((int) i)),
+            [this, i] (float value) { duckLevels[i] = value; moduleView.repaint(); });
+        duckLevelLinks[i]->sendInitialUpdate();
+    }
+    const auto shapeNames = audioProcessor.duckShapeNames();
+    for (size_t i = 0; i < duckThumbnails.size(); ++i)
+    {
+        auto& tile = duckThumbnails[i];
+        tile.shape = (int) i;
+        tile.setTitle (shapeNames[(int) i]);
+        tile.setTooltip (shapeNames[(int) i]);
+        tile.onClick = [this, i] { duckShapeLink->setValueAsCompleteGesture ((float) i); };
+        addAndMakeVisible (tile);
+    }
+    duckShapeLink = std::make_unique<juce::ParameterAttachment> (*audioProcessor.parameters.getParameter ("duckShape"),
+        [this] (float value)
+        {
+            duckShapeIndex = juce::jlimit (0, OneShotSamplerAudioProcessor::duckShapeCount - 1, juce::roundToInt (value));
+            for (size_t i = 0; i < duckThumbnails.size(); ++i)
+                duckThumbnails[i].setToggleState ((int) i == duckShapeIndex, juce::dontSendNotification);
+            moduleView.repaint();
+        });
+    duckShapeLink->sendInitialUpdate();
+    const std::array<const char*, 2> ids { "duckRate", "duckRoute" };
+    const std::array<const char*, 2> titles { "Rate", "Target layer" };
+    for (size_t i = 0; i < duckChoices.size(); ++i)
+    {
+        auto& choice = duckChoices[i];
+        choice.setTitle (titles[i]);
+        choice.setColour (juce::ComboBox::backgroundColourId, modularBlue);
+        choice.setColour (juce::ComboBox::textColourId, modularInk);
+        choice.setColour (juce::ComboBox::outlineColourId, modularInk.withAlpha (0.65f));
+        addAndMakeVisible (choice);
+        if (auto* parameter = dynamic_cast<juce::AudioParameterChoice*> (audioProcessor.parameters.getParameter (ids[i])))
+            choice.addItemList (parameter->choices, 1);
+        choice.onChange = [this] { moduleView.repaint(); };
+        duckChoiceLinks[i] = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (audioProcessor.parameters, ids[i], choice);
+    }
+    moduleView.setInterceptsMouseClicks (true, false);
+    moduleView.drag = [this] (const juce::MouseEvent& e, bool down)
+    {
+        if (! e.mods.isLeftButtonDown()) return;
+        if (showSidechain)
+        {
+            if (down)
+            {
+                if (e.getNumberOfClicks() > 1)
+                {
+                    for (auto& link : duckTimingLinks) link->setValueAsCompleteGesture (0.5f);
+                    for (auto& link : duckLevelLinks) link->setValueAsCompleteGesture (0.0f);
+                    return;
+                }
+                const auto handles = audioProcessor.duckHandles (duckTiming);
+                const auto x = (e.position.x - 9.5f) / juce::jmax (1, moduleView.getWidth() - 19);
+                duckDragging = 0;
+                for (int i = 1; i < 3; ++i)
+                    if (std::abs (x - handles[(size_t) i]) < std::abs (x - handles[(size_t) duckDragging])) duckDragging = i;
+                duckDragStart = handles[(size_t) duckDragging];
+                duckLevelDragStart = audioProcessor.editedDuckCurve (0.25f * (duckDragging + 1), duckShapeIndex, duckLevels);
+                duckLevelOffsetStart = duckLevels[(size_t) duckDragging];
+                duckTimingLinks[(size_t) duckDragging]->beginGesture();
+                duckLevelLinks[(size_t) duckDragging]->beginGesture();
+            }
+            else if (duckDragging >= 0)
+            {
+                const auto x = duckDragStart + (float) e.getDistanceFromDragStartX() / juce::jmax (1, moduleView.getWidth() - 19);
+                const auto middle = duckTiming[1];
+                const auto value = duckDragging == 0 ? x / middle : duckDragging == 2 ? (x - middle) / (1.0f - middle) : x;
+                const auto edge = duckDragging == 1 ? 0.15f : 0.10f;
+                duckTimingLinks[(size_t) duckDragging]->setValueAsPartOfGesture (juce::jlimit (edge, 1.0f - edge, value));
+                const auto phase = 0.25f * (duckDragging + 1);
+                const auto level = juce::jlimit (0.0f, 1.0f, duckLevelDragStart
+                    - (float) e.getDistanceFromDragStartY() / juce::jmax (1, moduleView.getHeight() - 17));
+                duckLevelLinks[(size_t) duckDragging]->setValueAsPartOfGesture (e.getDistanceFromDragStartY() == 0
+                    ? duckLevelOffsetStart : level - audioProcessor.duckCurve (phase, duckShapeIndex));
+            }
+            return;
+        }
+        if (e.getMouseDownY() < moduleView.getHeight() / 2) return;
+        if (down) offsetDragStart = (float) offsetSlider.getValue();
+        else offsetSlider.setValue (offsetDragStart + e.getDistanceFromDragStartX() * 200.0 / juce::jmax (1, moduleView.getWidth()),
+                                    juce::sendNotificationSync);
+    };
+    moduleView.endDrag = [this]
+    {
+        if (duckDragging >= 0)
+        {
+            duckTimingLinks[(size_t) duckDragging]->endGesture();
+            duckLevelLinks[(size_t) duckDragging]->endGesture();
+            duckDragging = -1;
+        }
+    };
     add (footerView, [blue] { return blue; }, [this] (juce::Graphics& g) { drawFooterLive (g); });
     add (limiterView, [blue] { return blue; }, [this] (juce::Graphics& g) { drawLimiterLive (g); });
     for (size_t i = 0; i < cardViews.size(); ++i)
@@ -2546,16 +2797,15 @@ void OneShotSamplerAudioProcessorEditor::resized()
     }
     // The header field owns its full pill and menu surface. The old ComboBoxes
     // remain state carriers only; they are never drawn in the Beta 2 board.
-    const auto showHeaderPreset = [this] (int effect, juce::ComboBox& preset)
+    const auto showHeaderPreset = [this] (int effect, juce::ComboBox&)
     {
         presetSelector.setVisible (true);
         presetSelector.setLayoutBounds (beta2PresetBounds);
-        presetSelector.setModule (effect, juce::jmax (0, preset.getSelectedId() - 1));
+        presetSelector.setModule (effect, (int) audioProcessor.parameters.state.getProperty (presetBankKey (effect), 0));
     };
     if (selectedFx == 5)
     {
-        eqCurvePad.setVisible (true); showHeaderPreset (5, eqPreset);
-        eqCurvePad.setBounds (beta2ModuleBounds.getX() + 20, beta2ModuleBounds.getY() + 84, beta2ModuleBounds.getWidth() - 40, beta2ModuleBounds.getHeight() - 104);
+        showHeaderPreset (5, eqPreset);
     }
     else if (selectedFx == 7)
     {
@@ -2602,6 +2852,8 @@ void OneShotSamplerAudioProcessorEditor::selectEffect (int effect)
     if (effect < 0 || effect > 9)
         return;
     selectedFx = effect;
+    showOffsetEq = effect == 5;
+    panelMode.setButtonText (showOffsetEq ? "Back" : showSidechain ? "Offset" : "Sidechain");
     if (effectPickerMenu != nullptr)
         effectPickerMenu->setActiveEffect (effect);
     resized();
@@ -2613,37 +2865,27 @@ void OneShotSamplerAudioProcessorEditor::toggleEffect (int effect)
     setEffectEnabled (effect, ! isEffectEnabled (effect));
 }
 
-bool OneShotSamplerAudioProcessorEditor::isEffectEnabled (int effect) const
+bool OneShotSamplerAudioProcessorEditor::legacyFxEnabled (int effect) const
 {
     if (effect >= 0 && effect < (int) fxSlotEnabled.size())
-        return fxSlotEnabled[(size_t) effect];
+        return audioProcessor.getFxSlotEnabled (effect);
+    const char* id = effect == 7 ? "granularEnabled" : effect == 8 ? "harmonyEnabled" : effect == 9 ? "randomEnabled" : nullptr;
+    return id != nullptr && audioProcessor.parameters.getRawParameterValue (id)->load() > 0.5f;
+}
 
-    if (effect == 7)
-        return audioProcessor.parameters.getRawParameterValue ("granularEnabled")->load() > 0.5f;
-    if (effect == 8)
-        return audioProcessor.parameters.getRawParameterValue ("harmonyEnabled")->load() > 0.5f;
-    if (effect == 9)
-        return audioProcessor.parameters.getRawParameterValue ("randomEnabled")->load() > 0.5f;
-
-    return false;
+bool OneShotSamplerAudioProcessorEditor::isEffectEnabled (int effect) const
+{
+    return audioProcessor.isLayerFxOn (effect, audioProcessor.getEffectLayer (effect), legacyFxEnabled (effect));
 }
 
 void OneShotSamplerAudioProcessorEditor::setEffectEnabled (int effect, bool shouldBeEnabled)
 {
-    if (effect >= 0 && effect < (int) fxSlotEnabled.size())
+    const auto layer = audioProcessor.getEffectLayer (effect);
+    if (auto* p = audioProcessor.parameters.getParameter (audioProcessor.fxParamId (layer, "layerFxOn" + juce::String (effect))))
     {
-        setSlotEnabled (effect, shouldBeEnabled);
-        return;
+        juce::ParameterAttachment attachment (*p, [] (float) {});
+        attachment.setValueAsCompleteGesture (shouldBeEnabled ? 2.0f : 1.0f);
     }
-
-    const char* parameterID = effect == 7 ? "granularEnabled"
-                            : effect == 8 ? "harmonyEnabled"
-                            : effect == 9 ? "randomEnabled" : nullptr;
-    if (parameterID != nullptr)
-        if (auto* parameter = audioProcessor.parameters.getParameter (parameterID))
-            parameter->setValueNotifyingHost (parameter->convertTo0to1 (shouldBeEnabled ? 1.0f : 0.0f));
-
-    resized();
     repaint();
 }
 
@@ -2717,24 +2959,108 @@ void OneShotSamplerAudioProcessorEditor::timerCallback()
         footerView.repaint();
     }
 
+    syncFxBanks();
     for (auto& deck : sourceDecks) deck->tick();
-    moduleView.setVisible (selectedFx != 5);
-    if (selectedFx != 5 && isEffectEnabled (selectedFx)) moduleView.repaint();
+    for (size_t layer = 0; layer < offsetPeaks.size(); ++layer)
+    {
+        const auto revision = audioProcessor.getSampleRevision ((int) layer);
+        if (revision != offsetRevisions[layer])
+        {
+            offsetRevisions[layer] = revision;
+            offsetPeaks[layer] = audioProcessor.getWaveformPeaks ((int) layer);
+            moduleView.repaint();
+        }
+    }
+    // These slow-moving visuals do not need to redraw at the input tick rate.
+    const auto visualFrame = meterTick % 2 == 0;
     for (size_t i = 0; i < cardViews.size(); ++i)
     {
         const auto enabled = isEffectEnabled (cardEffects[i]);
         const auto changed = enabled != lastCardEnabled[i];
         if (changed)
         {
-            if (selectedFx == cardEffects[i]) moduleView.repaint();
             sourceRoutes[i]->setEffectOn (enabled);
             lastCardEnabled[i] = enabled;
             cardViews[i].setBounds (cardVisualRect (i));
             repaint (beta2EffectTabBounds[i]);
         }
-        if (enabled || changed)
+        const auto icon = cardIconValues (i);
+        if ((enabled && visualFrame) || changed || icon != lastCardIcons[i])
+        {
+            lastCardIcons[i] = icon;
             cardViews[i].repaint();
+        }
     }
+}
+
+juce::String OneShotSamplerAudioProcessorEditor::presetBankKey (int effect) const
+{
+    return audioProcessor.fxParamId (audioProcessor.getEffectLayer (effect), "fxPreset" + juce::String (effect));
+}
+
+void OneShotSamplerAudioProcessorEditor::syncFxBanks()
+{
+    std::array<bool, 10> changed {};
+    bool any = false;
+    for (size_t i = 0; i < fxUiLayer.size(); ++i)
+    {
+        const auto layer = audioProcessor.getEffectLayer ((int) i);
+        changed[i] = fxUiLayer[i] != layer;
+        any |= changed[i];
+        fxUiLayer[i] = layer;
+    }
+    if (! any) return;
+    for (size_t i = 0; i < sourceRoutes.size(); ++i)
+        if (sourceRoutes[i] != nullptr) sourceRoutes[i]->setEffectOn (isEffectEnabled (cardEffects[i]));
+    const auto bind = [this] (size_t effect, auto& attachment, juce::Slider& slider, const char* id)
+    {
+        attachment.reset();
+        attachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
+            audioProcessor.parameters, audioProcessor.fxParamId (fxUiLayer[effect], id), slider);
+        usePercentageReadout (slider);
+    };
+    if (changed[0]) bind (0, delayTimeAttachment, delayTimeSlider, "delayTime");
+    if (changed[0]) bind (0, delayFeedbackAttachment, delayFeedbackSlider, "delayFeedback");
+    if (changed[0]) bind (0, delayMixAttachment, delayMixSlider, "delayMix");
+    if (changed[1]) bind (1, reverbMixAttachment, reverbMixSlider, "reverbMix");
+    if (changed[1]) bind (1, reverbRoomSizeAttachment, reverbRoomSizeSlider, "reverbRoomSize");
+    if (changed[1]) bind (1, reverbDampingAttachment, reverbDampingSlider, "reverbDamping");
+    if (changed[1]) bind (1, reverbWidthAttachment, reverbWidthSlider, "reverbWidth");
+    if (changed[1]) bind (1, reverbFreezeAttachment, reverbFreezeSlider, "reverbFreeze");
+    if (changed[2]) bind (2, chorusRateAttachment, chorusRateSlider, "chorusRate");
+    if (changed[2]) bind (2, chorusDepthAttachment, chorusDepthSlider, "chorusDepth");
+    if (changed[2]) bind (2, chorusDelayAttachment, chorusDelaySlider, "chorusDelay");
+    if (changed[2]) bind (2, chorusFeedbackAttachment, chorusFeedbackSlider, "chorusFeedback");
+    if (changed[2]) bind (2, chorusMixAttachment, chorusMixSlider, "chorusMix");
+    if (changed[3]) bind (3, phaserRateAttachment, phaserRateSlider, "phaserRate");
+    if (changed[3]) bind (3, phaserDepthAttachment, phaserDepthSlider, "phaserDepth");
+    if (changed[3]) bind (3, phaserFeedbackAttachment, phaserFeedbackSlider, "phaserFeedback");
+    if (changed[3]) bind (3, phaserMixAttachment, phaserMixSlider, "phaserMix");
+    if (changed[4]) bind (4, flangerRateAttachment, flangerRateSlider, "flangerRate");
+    if (changed[4]) bind (4, flangerDepthAttachment, flangerDepthSlider, "flangerDepth");
+    if (changed[4]) bind (4, flangerDelayAttachment, flangerDelaySlider, "flangerDelay");
+    if (changed[4]) bind (4, flangerFeedbackAttachment, flangerFeedbackSlider, "flangerFeedback");
+    if (changed[4]) bind (4, flangerMixAttachment, flangerMixSlider, "flangerMix");
+    if (changed[5]) bind (5, eqLowAttachment, eqLowSlider, "eqBand1Gain");
+    if (changed[5]) bind (5, eqMidAttachment, eqMidSlider, "eqBand4Gain");
+    if (changed[5]) bind (5, eqHighAttachment, eqHighSlider, "eqBand7Gain");
+    if (changed[6]) bind (6, flutterRateAttachment, flutterRateSlider, "flutterRate");
+    if (changed[6]) bind (6, flutterDepthAttachment, flutterDepthSlider, "flutterDepth");
+    if (changed[6]) bind (6, flutterDelayAttachment, flutterDelaySlider, "flutterDelay");
+    if (changed[6]) bind (6, flutterMixAttachment, flutterMixSlider, "flutterMix");
+    if (changed[7]) bind (7, granularSizeAttachment, granularSizeSlider, "granularSize");
+    if (changed[7]) bind (7, granularDensityAttachment, granularDensitySlider, "granularDensity");
+    if (changed[7]) bind (7, granularPitchAttachment, granularPitchSlider, "granularPitch");
+    if (changed[7]) bind (7, granularMixAttachment, granularMixSlider, "granularMix");
+    if (changed[8]) bind (8, harmonyShiftAttachment, harmonyShiftSlider, "harmonyShift");
+    if (changed[8]) bind (8, harmonyDetuneAttachment, harmonyDetuneSlider, "harmonyDetune");
+    if (changed[8]) bind (8, harmonyMixAttachment, harmonyMixSlider, "harmonyMix");
+    if (changed[9]) bind (9, randomAmountAttachment, randomAmountSlider, "randomAmount");
+    if (changed[9]) bind (9, randomRateAttachment, randomRateSlider, "randomRate");
+    if (changed[9]) bind (9, randomMixAttachment, randomMixSlider, "randomMix");
+    if (changed[5]) eqCurvePad.repaint();
+    if (juce::isPositiveAndBelow (selectedFx, (int) changed.size()) && changed[(size_t) selectedFx])
+        presetSelector.setModule (selectedFx, (int) audioProcessor.parameters.state.getProperty (presetBankKey (selectedFx), 0));
 }
 
 void OneShotSamplerAudioProcessorEditor::setEnvelopeLayer (int layer)
