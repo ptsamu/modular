@@ -14,3 +14,8 @@ but still hanging in there i think its coming out super cool :))
 as of 11/14
 
 barely have time to keep working on it due to personal reasons, seriously considering dropping this.
+
+
+11/16
+
+added sidechain to the sampler
