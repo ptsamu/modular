@@ -1,0 +1,36 @@
+name: Build Modular (Windows x64)
+
+on:
+  push:
+    branches:
+      - build/windows-vst3-edb4e9b
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Get JUCE
+        run: git clone --depth 1 --branch 8.0.15 https://github.com/juce-framework/JUCE.git "juce/one shot sampler/JUCE"
+      - name: Configure
+        working-directory: juce/one shot sampler
+        run: cmake -S . -B ci-build -A x64 -DMODULAR_SKIP_DRIFT_FIX=ON
+      - name: Build VST3
+        working-directory: juce/one shot sampler
+        run: cmake --build ci-build --config Release --target OneShotSampler_VST3 --parallel 4
+      - name: Package VST3 bundle
+        working-directory: juce/one shot sampler
+        run: |
+          $bundle = Get-ChildItem "ci-build/OneShotSampler_artefacts/Release/VST3" -Directory -Filter "*.vst3" | Select-Object -First 1
+          if (-not $bundle) { throw "VST3 bundle missing" }
+          $binary = Get-ChildItem (Join-Path $bundle.FullName "Contents/x86_64-win") -File -Filter "*.vst3"
+          if (-not $binary -or $binary.Length -lt 1024) { throw "Windows x64 VST3 binary missing or invalid" }
+          Compress-Archive -LiteralPath $bundle.FullName -DestinationPath "$env:GITHUB_WORKSPACE/Modular-Windows-x64-VST3.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Modular-Windows-x64-VST3
+          path: Modular-Windows-x64-VST3.zip
+          if-no-files-found: error
