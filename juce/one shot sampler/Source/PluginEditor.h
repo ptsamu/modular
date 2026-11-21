@@ -185,6 +185,17 @@ public:
     void mouseDown (const juce::MouseEvent&) override;
 
 private:
+    struct EditorBoard final : juce::Component
+    {
+        explicit EditorBoard (OneShotSamplerAudioProcessorEditor& editor) : owner (editor) {}
+        void paint (juce::Graphics& g) override { owner.paintBoard (g); }
+        OneShotSamplerAudioProcessorEditor& owner;
+    };
+
+    EditorBoard editorBoard { *this };
+    int maximumEditorWidth = 0;
+    void updateResizeLimits();
+    void paintBoard (juce::Graphics&);
     void showFxPage (bool shouldShowFx);
     void showTexturePage();
     void chooseEffectForSlot (int slot);
