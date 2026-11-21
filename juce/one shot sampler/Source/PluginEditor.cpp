@@ -1843,7 +1843,9 @@ OneShotSamplerAudioProcessorEditor::OneShotSamplerAudioProcessorEditor (OneShotS
     setOpaque (true);
     setResizable (true, true);
     updateResizeLimits();
-    const auto initialWidth = juce::jmin (boardWidth, maximumEditorWidth);
+    // Open compactly so the host workspace stays visible. The corner grip
+    // still lets the user grow the board up to the display's fit limit.
+    const auto initialWidth = juce::jmin (1150, juce::roundToInt (maximumEditorWidth * 0.9));
     setSize (initialWidth, juce::roundToInt (initialWidth / boardAspect));
     polishKnobs();
     startTimerHz (60);
