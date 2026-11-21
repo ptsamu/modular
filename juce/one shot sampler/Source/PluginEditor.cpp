@@ -4,6 +4,10 @@
 
 namespace
 {
+    constexpr int boardWidth = 1640;
+    constexpr int boardHeight = 720;
+    constexpr double boardAspect = (double) boardWidth / boardHeight;
+
     constexpr int cardEffects[5] = { 1, 7, 9, 2, 5 };
     // Every knob caption in the plugin uses this one font.
     juce::Font knobCaptionFont()
@@ -1467,6 +1471,9 @@ private:
 OneShotSamplerAudioProcessorEditor::OneShotSamplerAudioProcessorEditor (OneShotSamplerAudioProcessor& processor)
     : AudioProcessorEditor (&processor), audioProcessor (processor), envelopePad (processor.parameters, processor), eqCurvePad (processor.parameters, processor)
 {
+    addAndMakeVisible (editorBoard);
+    editorBoard.setOpaque (true);
+    editorBoard.setSize (boardWidth, boardHeight);
     spectrumHistory.clear (spectrumHistory.getBounds(), modularBlue);
     setupLiveViews();
     int badgeDataSize = 0;
@@ -1483,13 +1490,13 @@ OneShotSamplerAudioProcessorEditor::OneShotSamplerAudioProcessorEditor (OneShotS
         slider.setColour (juce::Slider::textBoxTextColourId, modularInk);
         slider.setColour (juce::Slider::textBoxBackgroundColourId, juce::Colours::transparentBlack);
         slider.setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
-        addAndMakeVisible (slider);
+        editorBoard.addAndMakeVisible (slider);
         label.setText (text, juce::dontSendNotification);
         label.setLookAndFeel (&frameworksLookAndFeel);
         label.setJustificationType (juce::Justification::centred);
         label.setColour (juce::Label::textColourId, modularInk);
         label.setFont (knobCaptionFont());
-        addAndMakeVisible (label);
+        editorBoard.addAndMakeVisible (label);
     };
 
     setupControl (outputGainSlider, outputGainLabel, "Gain");
@@ -1505,12 +1512,12 @@ OneShotSamplerAudioProcessorEditor::OneShotSamplerAudioProcessorEditor (OneShotS
     setupControl (releaseSlider, releaseLabel, "Release");
     // The tabs share the graph header; add them after the graph so they
     // receive clicks instead of the envelope's drag surface.
-    addAndMakeVisible (envelopePad);
+    editorBoard.addAndMakeVisible (envelopePad);
     for (size_t i = 0; i < envelopeTabs.size(); ++i)
     {
         envelopeTabs[i] = std::make_unique<BlueButton> (i == 0 ? "A" : "B");
         envelopeTabs[i]->onClick = [this, i] { setEnvelopeLayer ((int) i); };
-        addAndMakeVisible (*envelopeTabs[i]);
+        editorBoard.addAndMakeVisible (*envelopeTabs[i]);
     }
     setEnvelopeLayer (0);
 
@@ -1554,7 +1561,7 @@ OneShotSamplerAudioProcessorEditor::OneShotSamplerAudioProcessorEditor (OneShotS
     for (size_t i = 0; i < sourceDecks.size(); ++i)
     {
         sourceDecks[i] = std::make_unique<SourceDeck> (processor, frameworksLookAndFeel, (int) i);
-        addAndMakeVisible (*sourceDecks[i]);
+        editorBoard.addAndMakeVisible (*sourceDecks[i]);
     }
     for (size_t i = 0; i < sourceRoutes.size(); ++i)
     {
@@ -1565,7 +1572,7 @@ OneShotSamplerAudioProcessorEditor::OneShotSamplerAudioProcessorEditor (OneShotS
             setEffectEnabled (effect, ! isEffectEnabled (effect));
             sourceRoutes[i]->setEffectOn (isEffectEnabled (effect));
         });
-        addAndMakeVisible (*sourceRoutes[i]);
+        editorBoard.addAndMakeVisible (*sourceRoutes[i]);
         sourceRoutes[i]->beforeRouteChanged = [this, i]
         {
             const auto effect = cardEffects[i];
@@ -1585,7 +1592,7 @@ OneShotSamplerAudioProcessorEditor::OneShotSamplerAudioProcessorEditor (OneShotS
         tab->setLookAndFeel (&frameworksLookAndFeel);
         tab->setColour (juce::TextButton::buttonColourId, juce::Colour (0xff292929));
         tab->setColour (juce::TextButton::textColourOffId, modularInk);
-        addAndMakeVisible (*tab);
+        editorBoard.addAndMakeVisible (*tab);
     }
     textureTab.setName ("textureIcon");
     textureTab.setButtonText ({});
@@ -1603,7 +1610,7 @@ OneShotSamplerAudioProcessorEditor::OneShotSamplerAudioProcessorEditor (OneShotS
         box.setColour (juce::ComboBox::textColourId, juce::Colour (0xff1c1c1a));
         box.setColour (juce::ComboBox::arrowColourId, juce::Colour (0xff1c1c1a));
         box.setColour (juce::ComboBox::outlineColourId, juce::Colour (0xff1c1c1a).withAlpha (0.18f));
-        addAndMakeVisible (box);
+        editorBoard.addAndMakeVisible (box);
     };
     frameworksLookAndFeel.setColour (juce::PopupMenu::backgroundColourId, modularBlue);
     frameworksLookAndFeel.setColour (juce::PopupMenu::textColourId, modularInk);
@@ -1727,7 +1734,7 @@ OneShotSamplerAudioProcessorEditor::OneShotSamplerAudioProcessorEditor (OneShotS
     for (auto& route : sourceRoutes)
         route->onRouteChanged = [this] { syncFxBanks(); };
     presetSelector.setAlwaysOnTop (true);
-    addAndMakeVisible (presetSelector);
+    editorBoard.addAndMakeVisible (presetSelector);
 
     for (auto* slot : { &fxSlotOne, &fxSlotTwo, &fxSlotThree, &fxSlotFour, &fxSlotFive, &fxSlotSix, &fxSlotSeven })
     {
@@ -1735,7 +1742,7 @@ OneShotSamplerAudioProcessorEditor::OneShotSamplerAudioProcessorEditor (OneShotS
         slot->setName ("fxSlotHitArea");
         slot->setColour (juce::TextButton::buttonColourId, juce::Colours::transparentBlack);
         slot->setColour (juce::TextButton::textColourOffId, juce::Colours::transparentBlack);
-        addAndMakeVisible (*slot);
+        editorBoard.addAndMakeVisible (*slot);
     }
     // These transparent hit targets cover only the title/visual portion of a
     // Beta 2 card. They give every card a reliable click target without ever
@@ -1757,7 +1764,7 @@ OneShotSamplerAudioProcessorEditor::OneShotSamplerAudioProcessorEditor (OneShotS
         toggle->setLookAndFeel (&frameworksLookAndFeel);
         toggle->setName ("fxSlotToggle");
         toggle->setColour (juce::TextButton::textColourOffId, modularInk);
-        addAndMakeVisible (*toggle);
+        editorBoard.addAndMakeVisible (*toggle);
     }
     fxSlotToggleOne.onClick = [this] { setSlotEnabled (0, ! fxSlotEnabled[0]); };
     fxSlotToggleTwo.onClick = [this] { setSlotEnabled (1, ! fxSlotEnabled[1]); };
@@ -1778,7 +1785,7 @@ OneShotSamplerAudioProcessorEditor::OneShotSamplerAudioProcessorEditor (OneShotS
         // Attachments update the toggle state when a DAW restores a session.
         // Keep the visible ON/OFF text in sync for both clicks and restores.
         button.onStateChange = [&button] { button.setButtonText (button.getToggleState() ? "ON" : "OFF"); };
-        addAndMakeVisible (button);
+        editorBoard.addAndMakeVisible (button);
         attachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (audioProcessor.parameters, parameterID, button);
         button.setButtonText (button.getToggleState() ? "ON" : "OFF");
     };
@@ -1800,7 +1807,7 @@ OneShotSamplerAudioProcessorEditor::OneShotSamplerAudioProcessorEditor (OneShotS
     for (auto* tab : { &granularTextureTab, &harmonyTextureTab, &randomTextureTab })
     {
         tab->setLookAndFeel (&frameworksLookAndFeel);
-        addAndMakeVisible (*tab);
+        editorBoard.addAndMakeVisible (*tab);
     }
     granularTextureTab.onClick = [this] { textureEngine = 0; resized(); repaint(); };
     harmonyTextureTab.onClick = [this] { textureEngine = 1; resized(); repaint(); };
@@ -1814,7 +1821,7 @@ OneShotSamplerAudioProcessorEditor::OneShotSamplerAudioProcessorEditor (OneShotS
     eqLowAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (audioProcessor.parameters, "eqBand1Gain", eqLowSlider);
     eqMidAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (audioProcessor.parameters, "eqBand4Gain", eqMidSlider);
     eqHighAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (audioProcessor.parameters, "eqBand7Gain", eqHighSlider);
-    addAndMakeVisible (eqCurvePad);
+    editorBoard.addAndMakeVisible (eqCurvePad);
     for (int slot = 0; slot < (int) fxChain.size(); ++slot)
     {
         fxChain[(size_t) slot] = audioProcessor.getFxSlotEffect (slot);
@@ -1829,14 +1836,15 @@ OneShotSamplerAudioProcessorEditor::OneShotSamplerAudioProcessorEditor (OneShotS
             effectPickerMenu->setVisible (false);
         }
     }, selectedFx);
-    addAndMakeVisible (*effectPickerMenu);
+    editorBoard.addAndMakeVisible (*effectPickerMenu);
     effectPickerMenu->setVisible (false);
     addMouseListener (this, true);
     showFxPage (false);
     setOpaque (true);
-    setSize (1640, 720);
     setResizable (true, true);
-    setResizeLimits (1440, 680, 1920, 900);
+    updateResizeLimits();
+    const auto initialWidth = juce::jmin (boardWidth, maximumEditorWidth);
+    setSize (initialWidth, juce::roundToInt (initialWidth / boardAspect));
     polishKnobs();
     startTimerHz (60);
 }
@@ -1850,7 +1858,7 @@ OneShotSamplerAudioProcessorEditor::~OneShotSamplerAudioProcessorEditor()
 
 void OneShotSamplerAudioProcessorEditor::mouseDown (const juce::MouseEvent& event)
 {
-    const auto clicked = event.getEventRelativeTo (this).getPosition();
+    const auto clicked = event.getEventRelativeTo (&editorBoard).getPosition();
 
     // The selector is a self-contained popup. A click anywhere outside its
     // bounds closes it before the board handles the same click normally.
@@ -1906,7 +1914,40 @@ namespace
     }
 }
 
+void OneShotSamplerAudioProcessorEditor::updateResizeLimits()
+{
+    const auto& displays = juce::Desktop::getInstance().getDisplays();
+    const auto* display = getPeer() != nullptr ? displays.getDisplayForRect (getScreenBounds())
+                                               : displays.getPrimaryDisplay();
+
+    auto maxWidth = 1920;
+    if (display != nullptr)
+    {
+        // Leave room for the host wrapper and use the editor's host scale
+        // when computing how many editor units fit in the display work area.
+        const auto hostScale = juce::Rectangle<float> (0.0f, 0.0f, 1.0f, 1.0f)
+                                   .transformedBy (getTransform()).getWidth();
+        const auto workArea = display->userArea.reduced (24, 40);
+        const auto fitWidth = juce::jmin ((double) workArea.getWidth(), workArea.getHeight() * boardAspect);
+        maxWidth = juce::jlimit (2, maxWidth, (int) std::floor (fitWidth / juce::jmax (0.01f, hostScale)));
+    }
+
+    if (maxWidth == maximumEditorWidth)
+        return;
+
+    maximumEditorWidth = maxWidth;
+    const auto minWidth = juce::jmin (boardWidth / 2, maxWidth / 2);
+    setResizeLimits (minWidth, juce::jmax (1, juce::roundToInt (minWidth / boardAspect)),
+                     maxWidth, juce::jmax (1, juce::roundToInt (maxWidth / boardAspect)));
+    getConstrainer()->setFixedAspectRatio (boardAspect);
+}
+
 void OneShotSamplerAudioProcessorEditor::paint (juce::Graphics& g)
+{
+    g.fillAll (modularBlue);
+}
+
+void OneShotSamplerAudioProcessorEditor::paintBoard (juce::Graphics& g)
 {
     // Line design: a single blue field and a single off-white ink. Panels are
     // hairline outlines; nothing is filled, shaded or textured.
@@ -1927,7 +1968,7 @@ void OneShotSamplerAudioProcessorEditor::paint (juce::Graphics& g)
     };
     const auto font = [] (float size) { return juce::Font ("Helvetica", size, juce::Font::plain); };
 
-    auto board = getLocalBounds().reduced (18);
+    auto board = editorBoard.getLocalBounds().reduced (18);
     auto fullHeader = board.removeFromTop (56);
     const auto header = fullHeader.removeFromLeft (700);
     auto footer = board.removeFromBottom (30);
@@ -2017,7 +2058,7 @@ juce::Rectangle<int> OneShotSamplerAudioProcessorEditor::moduleVisualRect() cons
 
 juce::Rectangle<int> OneShotSamplerAudioProcessorEditor::footerRect() const
 {
-    return getLocalBounds().reduced (18).removeFromBottom (30);
+    return editorBoard.getLocalBounds().reduced (18).removeFromBottom (30);
 }
 
 juce::Rectangle<int> OneShotSamplerAudioProcessorEditor::limiterRect() const
@@ -2468,7 +2509,7 @@ void OneShotSamplerAudioProcessorEditor::setupLiveViews()
 {
     const auto blue = modularBlue;
     const auto add = [this] (LiveView& view, std::function<juce::Colour()> bg, std::function<void (juce::Graphics&)> draw)
-    { view.background = std::move (bg); view.draw = std::move (draw); addAndMakeVisible (view); view.toBack(); };
+    { view.background = std::move (bg); view.draw = std::move (draw); editorBoard.addAndMakeVisible (view); view.toBack(); };
     add (scopeView, [blue] { return blue; }, [this] (juce::Graphics& g) { drawScopeLive (g); });
     add (moduleView, [blue] { return blue; }, [this] (juce::Graphics& g) { drawModuleLive (g); });
     offsetSlider.setSliderStyle (juce::Slider::LinearHorizontal);
@@ -2481,12 +2522,12 @@ void OneShotSamplerAudioProcessorEditor::setupLiveViews()
     offsetSlider.onValueChange = [this] { moduleView.repaint(); };
     offsetAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
         audioProcessor.parameters, "layerOffsetMs", offsetSlider);
-    addAndMakeVisible (offsetSlider);
+    editorBoard.addAndMakeVisible (offsetSlider);
     for (auto* button : { &offsetReset, &panelMode })
     {
         button->setColour (juce::TextButton::buttonColourId, modularBlue.brighter (0.13f));
         button->setColour (juce::TextButton::textColourOffId, modularInk);
-        addAndMakeVisible (*button);
+        editorBoard.addAndMakeVisible (*button);
     }
     offsetReset.onClick = [this] { offsetSlider.setValue (0, juce::sendNotificationSync); };
     panelMode.onClick = [this]
@@ -2496,11 +2537,11 @@ void OneShotSamplerAudioProcessorEditor::setupLiveViews()
         panelMode.setButtonText (showSidechain ? "Offset" : "Sidechain");
         layoutLiveViews();
         moduleView.repaint();
-        repaint (beta2ModuleBounds);
+        editorBoard.repaint (beta2ModuleBounds);
     };
     duckOn = std::make_unique<BlueButton> ("Off");
     duckOn->setClickingTogglesState (true);
-    addAndMakeVisible (*duckOn);
+    editorBoard.addAndMakeVisible (*duckOn);
     duckOnLink = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (audioProcessor.parameters, "duckOn", *duckOn);
     duckOn->onStateChange = [this] { duckOn->setButtonText (duckOn->getToggleState() ? "On" : "Off"); };
     duckOn->onStateChange();
@@ -2513,12 +2554,12 @@ void OneShotSamplerAudioProcessorEditor::setupLiveViews()
     duckDepth.setTextValueSuffix ("%");
     duckDepth.setColour (juce::Slider::textBoxTextColourId, modularInk);
     duckDepth.setColour (juce::Slider::thumbColourId, modularInk);
-    addAndMakeVisible (duckDepth);
+    editorBoard.addAndMakeVisible (duckDepth);
     duckMixLabel.setText ("Mix", juce::dontSendNotification);
     duckMixLabel.setJustificationType (juce::Justification::centred);
     duckMixLabel.setFont (juce::FontOptions (11.0f));
     duckMixLabel.setColour (juce::Label::textColourId, modularInk);
-    addAndMakeVisible (duckMixLabel);
+    editorBoard.addAndMakeVisible (duckMixLabel);
     duckDepthLink = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (audioProcessor.parameters, "duckDepth", duckDepth);
     const std::array<const char*, 3> timingIds { "duckEarly", "duckMidpoint", "duckLate" };
     for (size_t i = 0; i < timingIds.size(); ++i)
@@ -2539,7 +2580,7 @@ void OneShotSamplerAudioProcessorEditor::setupLiveViews()
         tile.setTitle (shapeNames[(int) i]);
         tile.setTooltip (shapeNames[(int) i]);
         tile.onClick = [this, i] { duckShapeLink->setValueAsCompleteGesture ((float) i); };
-        addAndMakeVisible (tile);
+        editorBoard.addAndMakeVisible (tile);
     }
     duckShapeLink = std::make_unique<juce::ParameterAttachment> (*audioProcessor.parameters.getParameter ("duckShape"),
         [this] (float value)
@@ -2559,7 +2600,7 @@ void OneShotSamplerAudioProcessorEditor::setupLiveViews()
         choice.setColour (juce::ComboBox::backgroundColourId, modularBlue);
         choice.setColour (juce::ComboBox::textColourId, modularInk);
         choice.setColour (juce::ComboBox::outlineColourId, modularInk.withAlpha (0.65f));
-        addAndMakeVisible (choice);
+        editorBoard.addAndMakeVisible (choice);
         if (auto* parameter = dynamic_cast<juce::AudioParameterChoice*> (audioProcessor.parameters.getParameter (ids[i])))
             choice.addItemList (parameter->choices, 1);
         choice.onChange = [this] { moduleView.repaint(); };
@@ -2637,9 +2678,16 @@ void OneShotSamplerAudioProcessorEditor::setupLiveViews()
 
 void OneShotSamplerAudioProcessorEditor::resized()
 {
-    // Preserve the full-size board, giving back height from the tall source
-    // display first so the Sidechain graph and controls stay usable.
-    auto board = getLocalBounds().reduced (18);
+    // Scale drawing, controls and hit areas together in JUCE's logical coordinates.
+    const auto scale = juce::jmin ((float) getWidth() / boardWidth, (float) getHeight() / boardHeight);
+    if (scale <= 0.0f)
+        return;
+
+    editorBoard.setTransform (juce::AffineTransform::scale (scale)
+                                  .translated ((getWidth() - boardWidth * scale) * 0.5f,
+                                               (getHeight() - boardHeight * scale) * 0.5f));
+
+    auto board = editorBoard.getLocalBounds().reduced (18);
     auto headerRow = board.removeFromTop (56);
     headerRow.removeFromLeft (700);
     headerRow.removeFromLeft (12);
@@ -2967,6 +3015,9 @@ void OneShotSamplerAudioProcessorEditor::timerCallback()
     if (! isShowing())
         return;
 
+    if (meterTick % 30 == 0)
+        updateResizeLimits();
+
     const auto now = juce::Time::getMillisecondCounterHiRes() * 0.001;
     const auto dt = lastVisualTime > 0.0 ? juce::jlimit (0.0, 0.1, now - lastVisualTime) : 0.0;
     lastVisualTime = now;
@@ -3007,7 +3058,7 @@ void OneShotSamplerAudioProcessorEditor::timerCallback()
             sourceRoutes[i]->setEffectOn (enabled);
             lastCardEnabled[i] = enabled;
             cardViews[i].setBounds (cardVisualRect (i));
-            repaint (beta2EffectTabBounds[i]);
+            editorBoard.repaint (beta2EffectTabBounds[i]);
         }
         const auto icon = cardIconValues (i);
         if ((enabled && visualFrame) || changed || icon != lastCardIcons[i])
@@ -3153,7 +3204,7 @@ void OneShotSamplerAudioProcessorEditor::updateScopeAndMeters()
         shownVelocity = audioProcessor.getLastVelocity();
         if (shownNote >= 0)
             keyGlow[(size_t) (((shownNote - 60) % 24 + 24) % 24)] = 1.0f;
-        repaint (620, 18, 110, 60); // header key pill
+        editorBoard.repaint (620, 18, 110, 60); // header key pill
     }
     for (auto& glow : keyGlow)
         glow = juce::jmax (0.0f, glow - 0.036f);
