@@ -19,3 +19,10 @@ barely have time to keep working on it due to personal reasons, seriously consid
 11/16
 
 added sidechain to the sampler
+
+
+
+11/20
+making some more progress..
+
+
