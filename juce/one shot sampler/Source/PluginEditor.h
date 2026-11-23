@@ -90,8 +90,11 @@ public:
     void mouseDrag (const juce::MouseEvent&) override;
     void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
 private:
+    using BandCoefficients = std::array<juce::dsp::IIR::Coefficients<float>::Ptr, 7>;
+    BandCoefficients readCoefficients (double sampleRate) const;
     std::array<juce::Point<float>, 7> getHandles() const;
-    float getResponseAtFrequency (float frequency) const;
+    std::array<juce::Point<float>, 7> getHandles (double sampleRate, const BandCoefficients&) const;
+    static float getResponseAtFrequency (float frequency, double sampleRate, const BandCoefficients&);
     juce::String prefixForBand (int band) const;
     void setBand (int band, float frequency, float gain);
     int draggedBand = -1;
@@ -121,7 +124,6 @@ public:
     std::function<void (int, int)> onPresetSelected;
 
 private:
-    static juce::Colour accentForEffect (int effect);
     static juce::String labelForEffect (int effect);
     static juce::String presetNameFor (int effect, int preset);
     static juce::String presetIdFor (int effect, int preset);
@@ -180,6 +182,7 @@ public:
 
     void paint (juce::Graphics&) override;
     void resized() override;
+    void setScaleFactor (float newScale) override;
     bool isInterestedInDragSource (const SourceDetails&) override;
     void itemDropped (const SourceDetails&) override;
     void mouseDown (const juce::MouseEvent&) override;
@@ -194,6 +197,7 @@ private:
 
     EditorBoard editorBoard { *this };
     int maximumEditorWidth = 0;
+    juce::Point<int> automaticEditorSize;
     void updateResizeLimits();
     void paintBoard (juce::Graphics&);
     void showFxPage (bool shouldShowFx);
@@ -274,7 +278,7 @@ private:
     juce::Label outputGainLabel;
     juce::Slider attackSlider, decaySlider, sustainSlider, releaseSlider;
     juce::Slider delayTimeSlider, delayFeedbackSlider, delayMixSlider, reverbMixSlider, reverbRoomSizeSlider, reverbDampingSlider, reverbWidthSlider, reverbFreezeSlider;
-    juce::Slider chorusRateSlider, chorusDepthSlider, chorusDelaySlider, chorusFeedbackSlider, chorusMixSlider;
+    juce::Slider chorusRateSlider, chorusDepthSlider, chorusDelaySlider, chorusFeedbackSlider, chorusMixSlider, chorusDriveSlider;
     juce::Slider phaserRateSlider, phaserDepthSlider, phaserFeedbackSlider, phaserMixSlider;
     juce::Slider flangerRateSlider, flangerDepthSlider, flangerDelaySlider, flangerFeedbackSlider, flangerMixSlider;
     juce::Slider flutterRateSlider, flutterDepthSlider, flutterDelaySlider, flutterMixSlider;
@@ -282,7 +286,7 @@ private:
     juce::Slider eqLowSlider, eqMidSlider, eqHighSlider;
     juce::Label attackLabel, decayLabel, sustainLabel, releaseLabel;
     juce::Label delayTimeLabel, delayFeedbackLabel, delayMixLabel, reverbMixLabel, reverbRoomSizeLabel, reverbDampingLabel, reverbWidthLabel, reverbFreezeLabel;
-    juce::Label chorusRateLabel, chorusDepthLabel, chorusDelayLabel, chorusFeedbackLabel, chorusMixLabel;
+    juce::Label chorusRateLabel, chorusDepthLabel, chorusDelayLabel, chorusFeedbackLabel, chorusMixLabel, chorusDriveLabel;
     juce::Label phaserRateLabel, phaserDepthLabel, phaserFeedbackLabel, phaserMixLabel;
     juce::Label flangerRateLabel, flangerDepthLabel, flangerDelayLabel, flangerFeedbackLabel, flangerMixLabel;
     juce::Label flutterRateLabel, flutterDepthLabel, flutterDelayLabel, flutterMixLabel;
@@ -294,14 +298,14 @@ private:
     juce::TextButton flutterEnabledButton { "OFF" };
     juce::TextButton granularEnabledButton { "OFF" }, harmonyEnabledButton { "OFF" }, randomEnabledButton { "OFF" };
     juce::TextButton granularTextureTab { "GRANULAR" }, harmonyTextureTab { "ORBIT" }, randomTextureTab { "RANDOM" };
-    juce::ComboBox delayPreset, reverbPreset, chorusPreset, phaserPreset, flangerPreset, flutterPreset, granularPreset, harmonyPreset, randomPreset;
+    juce::ComboBox delayPreset, phaserPreset, flangerPreset, flutterPreset, harmonyPreset;
     juce::ComboBox eqPreset;
     FxSlotButton fxSlotOne { 0 }, fxSlotTwo { 1 }, fxSlotThree { 2 }, fxSlotFour { 3 }, fxSlotFive { 4 }, fxSlotSix { 5 }, fxSlotSeven { 6 };
     juce::TextButton fxSlotToggleOne { "OFF" }, fxSlotToggleTwo { "OFF" }, fxSlotToggleThree { "OFF" }, fxSlotToggleFour { "OFF" }, fxSlotToggleFive { "OFF" }, fxSlotToggleSix { "OFF" }, fxSlotToggleSeven { "OFF" };
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> outputGainAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> attackAttachment, decayAttachment, sustainAttachment, releaseAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> delayTimeAttachment, delayFeedbackAttachment, delayMixAttachment, reverbMixAttachment, reverbRoomSizeAttachment, reverbDampingAttachment, reverbWidthAttachment, reverbFreezeAttachment;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> chorusRateAttachment, chorusDepthAttachment, chorusDelayAttachment, chorusFeedbackAttachment, chorusMixAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> chorusRateAttachment, chorusDepthAttachment, chorusDelayAttachment, chorusFeedbackAttachment, chorusMixAttachment, chorusDriveAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> phaserRateAttachment, phaserDepthAttachment, phaserFeedbackAttachment, phaserMixAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> flangerRateAttachment, flangerDepthAttachment, flangerDelayAttachment, flangerFeedbackAttachment, flangerMixAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> flutterRateAttachment, flutterDepthAttachment, flutterDelayAttachment, flutterMixAttachment;

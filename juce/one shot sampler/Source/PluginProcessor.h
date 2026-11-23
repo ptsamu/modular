@@ -212,6 +212,7 @@ private:
         juce::dsp::Reverb reverb;
         juce::AudioBuffer<float> reverbPreDelayBuffer, reverbWetBuffer;
         int reverbPreDelayWritePosition = 0;
+        int reverbFreezeWarmupSamples = 0;
         float reverbPreDelayCurrent = 0.0f;
         std::array<float, 2> reverbToneState {};
         std::array<float, 2> reverbHighPassState {};
@@ -222,7 +223,8 @@ private:
         std::array<float, 3> modDelayCurrent {}, modSweepCurrent {};
         float flutterRandom = 0.0f, flutterRandomTarget = 0.0f;
         int flutterRandomCountdown = 0;
-        std::array<float, 2> chorusFeedbackState {};
+        std::array<float, 2> chorusFeedbackState {}, previousChorusInput {};
+        juce::SmoothedValue<float> chorusDriveSmooth;
         std::array<float, 2> flangerFeedbackState {};
         juce::AudioBuffer<float> textureBuffer;
         int textureWritePosition = 0;
@@ -271,7 +273,7 @@ private:
     // when a value actually changes.
     std::array<std::array<std::atomic<int>, 7>, 2> eqBandTypes {};
     std::array<std::array<std::array<std::atomic<float>*, 3>, 7>, 2> eqParamPointers {};
-    std::array<std::array<std::atomic<float>*, 36>, 2> fxValues {};
+    std::array<std::array<std::atomic<float>*, 37>, 2> fxValues {};
     std::array<juce::AudioBuffer<float>, 2> layerBuffers;
     std::array<std::shared_ptr<SampleData>, 2> playingSamples;
     std::array<std::atomic<float>, 2> layerProgress {};
@@ -281,6 +283,7 @@ private:
     std::array<std::array<std::atomic<float>*, 4>, 2> envelopeParams {};
     std::array<std::array<std::atomic<float>*, 10>, 2> sourceParams {};
     std::array<std::atomic<float>*, 10> routeParams {};
+    std::array<std::atomic<float>*, 7> rackEffectParams {}, rackEnabledParams {};
     std::atomic<float> outputLevel { 0.0f };
     std::array<std::atomic<float>, 2> envelopeLevel {};
     std::atomic<float> playbackProgress { 0.0f };

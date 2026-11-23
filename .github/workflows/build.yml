@@ -47,6 +47,57 @@ jobs:
           done
           ls -la "$GITHUB_WORKSPACE/out"
 
+      - name: Build universal beta installer
+        working-directory: juce/one shot sampler/ci-build/OneShotSampler_artefacts/Release
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$(mktemp -d)"
+          components="$(mktemp -d)/components.plist"
+          package="$GITHUB_WORKSPACE/out/Modular-Beta-2-macOS.pkg"
+          stage_bundle() {
+            local bundle="$1" destination="$2" executable
+            executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$bundle/Contents/Info.plist")"
+            lipo -verify_arch arm64 x86_64 "$bundle/Contents/MacOS/$executable"
+            codesign --verify --deep --strict "$bundle"
+            mkdir -p "$root/$destination"
+            ditto "$bundle" "$root/$destination/$(basename "$bundle")"
+          }
+          stage_bundle "Standalone/Modular Beta 2.app" "Applications"
+          stage_bundle "AU/Modular Beta 2.component" "Library/Audio/Plug-Ins/Components"
+          stage_bundle "VST3/Modular Beta 2.vst3" "Library/Audio/Plug-Ins/VST3"
+          pkgbuild --analyze --root "$root" "$components"
+          python3 - "$components" <<'PY'
+          import plistlib
+          import sys
+
+          path = sys.argv[1]
+          with open(path, "rb") as source:
+              bundles = plistlib.load(source)
+          for bundle in bundles:
+              bundle["BundleIsRelocatable"] = False
+              bundle["BundleOverwriteAction"] = "upgrade"
+              bundle["BundleIsVersionChecked"] = False
+          with open(path, "wb") as destination:
+              plistlib.dump(bundles, destination)
+          PY
+          pkgbuild --root "$root" --component-plist "$components" \
+            --identifier com.frameworks.modular.beta2 --version 0.1.0 \
+            --install-location / "$package"
+          pkgutil --payload-files "$package" | tee "$RUNNER_TEMP/modular-payload.txt"
+          for bundle in \
+            'Applications/Modular Beta 2.app' \
+            'Library/Audio/Plug-Ins/Components/Modular Beta 2.component' \
+            'Library/Audio/Plug-Ins/VST3/Modular Beta 2.vst3'; do
+            grep -F "$bundle/Contents/Info.plist" "$RUNNER_TEMP/modular-payload.txt"
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Modular-macOS-Installer
+          path: out/Modular-Beta-2-macOS.pkg
+          if-no-files-found: error
+
       - uses: actions/upload-artifact@v4
         with:
           name: Modular-macOS

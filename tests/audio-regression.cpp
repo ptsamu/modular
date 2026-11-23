@@ -1,4 +1,6 @@
 #include "PluginProcessor.h"
+#include "PluginEditor.h"
+#include "FactoryFxPresets.h"
 #include <iostream>
 
 int main()
@@ -212,11 +214,89 @@ int main()
         std::unique_ptr<juce::AudioProcessorEditor> editor (restored.createEditor());
         editor->setSize (1440, 680);
         for (const auto* child : editor->getChildren())
-            if (child->isVisible() && ! child->getBounds().isEmpty() && ! editor->getLocalBounds().contains (child->getBounds()))
+            if (child->isVisible() && ! child->getBoundsInParent().isEmpty() && ! editor->getLocalBounds().contains (child->getBoundsInParent()))
                 return 17;
     }
     if (! restored.getFxSlotEnabled (1) || ! restored.isLayerFxOn (1, 1, true)) return 18;
     std::cout << "Legacy Both and missing sample survive restore; compact editor reopens without changing FX\n";
+
+    const auto renderPreset = [&] (int effect, int index, int layer, double sampleRate, bool shortSource = false)
+    {
+        OneShotSamplerAudioProcessor processor;
+        if (! processor.loadSample (temp.getFile(), layer))
+            return -1.0;
+        if (shortSource)
+            setParam (processor, processor.sourceParamId (layer, "End").toRawUTF8(), .04f);
+        setParam (processor, processor.routeParamId (effect).toRawUTF8(), (float) layer);
+        setParam (processor, processor.fxParamId (layer, "layerFxOn" + juce::String (effect)).toRawUTF8(), 2.0f);
+        const auto bank = FactoryFxPresets::bankFor (effect);
+        std::unique_ptr<juce::AudioProcessorEditor> editor (processor.createEditor());
+        auto* board = editor->getChildComponent (0);
+        PresetSelector* selector = nullptr;
+        for (auto* child : board->getChildren())
+            if (auto* candidate = dynamic_cast<PresetSelector*> (child))
+                selector = candidate;
+        if (selector == nullptr)
+            return -1.0;
+        selector->onPresetSelected (effect, index);
+
+        for (size_t i = 0; i < bank.parameters.size() && bank.parameters[i] != nullptr; ++i)
+        {
+            auto* parameter = processor.parameters.getParameter (processor.fxParamId (layer, bank.parameters[i]));
+            if (parameter == nullptr || std::abs (parameter->getValue() - parameter->convertTo0to1 (bank.presets[index].values[i])) > 0.0001f)
+                return -1.0;
+        }
+
+        processor.prepareToPlay (sampleRate, 127);
+        juce::AudioBuffer<float> audio (2, 257);
+        juce::MidiBuffer midi;
+        midi.addEvent (juce::MidiMessage::noteOn (1, 60, 1.0f), 7);
+        double energy = 0.0;
+        for (int block = 0; block < 140; ++block)
+        {
+            processor.processBlock (audio, midi);
+            midi.clear();
+            for (int ch = 0; ch < audio.getNumChannels(); ++ch)
+                for (int frame = 0; frame < audio.getNumSamples(); ++frame)
+                {
+                    const auto x = audio.getSample (ch, frame);
+                    if (! std::isfinite (x) || std::abs (x) > 0.966051f)
+                        return -1.0;
+                    if (! shortSource || block * audio.getNumSamples() + frame > sampleRate * .5)
+                        energy += (double) x * x;
+                }
+        }
+        return energy;
+    };
+    for (const auto effect : { 1, 2, 7, 9 })
+        for (int index = 0; index < FactoryFxPresets::bankFor (effect).size; ++index)
+            for (int layer = 0; layer < 2; ++layer)
+                if (renderPreset (effect, index, layer, layer == 0 ? 44100.0 : 96000.0) <= 0.0)
+                {
+                    std::cerr << "Factory preset failed for effect " << effect << ", index " << index << ", layer " << layer << '\n';
+                    return 19;
+                }
+
+    for (const auto preset : { 2, 11 })
+        if (renderPreset (1, preset, 0, 44100.0, true) < 0.00001)
+        {
+            std::cerr << "Frozen preset failed to capture a fresh source note\n";
+            return 21;
+        }
+
+    for (int layer = 0; layer < 2; ++layer)
+    {
+        const auto id = restored.fxParamId (layer, "chorusDrive");
+        setParam (restored, id.toRawUTF8(), .85f);
+        oldState.removeChild (oldState.getChildWithProperty ("id", id), nullptr);
+    }
+    juce::AudioProcessor::copyXmlToBinary (*oldState.createXml(), stateBytes);
+    restored.setStateInformation (stateBytes.getData(), (int) stateBytes.getSize());
+    for (int layer = 0; layer < 2; ++layer)
+        if (restored.parameters.getRawParameterValue (restored.fxParamId (layer, "chorusDrive"))->load() != 0.0f)
+            return 20;
+    std::cout << "All 48 factory presets apply and render on both layers; legacy sessions restore clean chorus\n";
+
     std::cout << "One bar dry/sync/note: " << barDry << "/" << barLoop << "/" << barNote << '\n';
     return dry > 0 && ducked >= 0 && ducked < dry * 0.3f && fallback >= 0 && fallback < dry * 0.3f
         && barDry > 0 && barLoop >= 0 && barLoop < barDry * 0.3f && std::abs (barDry - barNote) < 1e-6f

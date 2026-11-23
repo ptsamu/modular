@@ -3,8 +3,8 @@
 
 namespace
 {
-    enum class FxValue { delayTime, delayFeedback, delayMix, reverbMix, reverbRoomSize, reverbDamping, reverbWidth, reverbFreeze, chorusRate, chorusDepth, chorusDelay, chorusFeedback, chorusMix, flangerRate, flangerDepth, flangerDelay, flangerFeedback, flangerMix, flutterRate, flutterDepth, flutterDelay, flutterMix, granularMix, harmonyMix, randomMix, granularSize, granularDensity, granularPitch, randomAmount, randomRate, harmonyShift, harmonyDetune, phaserRate, phaserDepth, phaserFeedback, phaserMix };
-    constexpr std::array<const char*, 36> fxValueIds { "delayTime", "delayFeedback", "delayMix", "reverbMix", "reverbRoomSize", "reverbDamping", "reverbWidth", "reverbFreeze", "chorusRate", "chorusDepth", "chorusDelay", "chorusFeedback", "chorusMix", "flangerRate", "flangerDepth", "flangerDelay", "flangerFeedback", "flangerMix", "flutterRate", "flutterDepth", "flutterDelay", "flutterMix", "granularMix", "harmonyMix", "randomMix", "granularSize", "granularDensity", "granularPitch", "randomAmount", "randomRate", "harmonyShift", "harmonyDetune", "phaserRate", "phaserDepth", "phaserFeedback", "phaserMix" };
+    enum class FxValue { delayTime, delayFeedback, delayMix, reverbMix, reverbRoomSize, reverbDamping, reverbWidth, reverbFreeze, chorusRate, chorusDepth, chorusDelay, chorusFeedback, chorusMix, flangerRate, flangerDepth, flangerDelay, flangerFeedback, flangerMix, flutterRate, flutterDepth, flutterDelay, flutterMix, granularMix, harmonyMix, randomMix, granularSize, granularDensity, granularPitch, randomAmount, randomRate, harmonyShift, harmonyDetune, phaserRate, phaserDepth, phaserFeedback, phaserMix, chorusDrive };
+    constexpr std::array<const char*, 37> fxValueIds { "delayTime", "delayFeedback", "delayMix", "reverbMix", "reverbRoomSize", "reverbDamping", "reverbWidth", "reverbFreeze", "chorusRate", "chorusDepth", "chorusDelay", "chorusFeedback", "chorusMix", "flangerRate", "flangerDepth", "flangerDelay", "flangerFeedback", "flangerMix", "flutterRate", "flutterDepth", "flutterDelay", "flutterMix", "granularMix", "harmonyMix", "randomMix", "granularSize", "granularDensity", "granularPitch", "randomAmount", "randomRate", "harmonyShift", "harmonyDetune", "phaserRate", "phaserDepth", "phaserFeedback", "phaserMix", "chorusDrive" };
 }
 
 OneShotSamplerAudioProcessor::OneShotSamplerAudioProcessor()
@@ -46,6 +46,12 @@ OneShotSamplerAudioProcessor::OneShotSamplerAudioProcessor()
         routeParams[i] = parameters.getRawParameterValue (routeParamId ((int) i));
         for (int layer = 0; layer < 2; ++layer)
             layerFxOn[(size_t) layer][i] = parameters.getRawParameterValue (fxParamId (layer, "layerFxOn" + juce::String ((int) i)));
+    }
+    for (size_t slot = 0; slot < rackEffectParams.size(); ++slot)
+    {
+        const auto prefix = "rackSlot" + juce::String (static_cast<int> (slot + 1));
+        rackEffectParams[slot] = parameters.getRawParameterValue (prefix + "Effect");
+        rackEnabledParams[slot] = parameters.getRawParameterValue (prefix + "Enabled");
     }
     refreshEqTypes();
     parameters.state.addListener (this);
@@ -248,6 +254,12 @@ juce::AudioProcessorValueTreeState::ParameterLayout OneShotSamplerAudioProcessor
         layout.add (std::make_unique<juce::AudioParameterFloat> (prefix + "Q", prefix + " Q", juce::NormalisableRange<float> (0.2f, 8.0f, 0.01f), 0.8f));
     }
 
+    for (int layer = 0; layer < 2; ++layer)
+        layout.add (std::make_unique<juce::AudioParameterFloat> (
+            juce::ParameterID { fxParamId (layer, "chorusDrive"), 1 },
+            layer == 0 ? "Chorus Drive" : "B Chorus Drive",
+            juce::NormalisableRange<float> (0.0f, 1.0f, 0.01f), 0.0f));
+
     return layout;
 }
 
@@ -259,8 +271,7 @@ int OneShotSamplerAudioProcessor::getFxSlotEffect (int slot) const
 
     // Choice index 0 means an empty rack card; the seven effect choices map
     // directly to internal effects 0–6.
-    const auto id = "rackSlot" + juce::String (slot + 1) + "Effect";
-    const auto choice = parameters.getRawParameterValue (id)->load();
+    const auto choice = rackEffectParams[(size_t) slot]->load();
     return juce::jlimit (-1, 6, juce::roundToInt (choice) - 1);
 }
 
@@ -269,7 +280,7 @@ bool OneShotSamplerAudioProcessor::getFxSlotEnabled (int slot) const
     if (slot < 0 || slot >= 7)
         return false;
 
-    return parameters.getRawParameterValue ("rackSlot" + juce::String (slot + 1) + "Enabled")->load() > 0.5f;
+    return rackEnabledParams[(size_t) slot]->load() > 0.5f;
 }
 
 void OneShotSamplerAudioProcessor::setFxSlotState (int slot, int effect, bool enabled)
@@ -292,12 +303,22 @@ double OneShotSamplerAudioProcessor::getTailLengthSeconds() const
     double seconds = 10.0;
     const auto tempo = hostBpm.load (std::memory_order_relaxed);
     const auto bpm = std::isfinite (tempo) && tempo > 0.0 ? juce::jlimit (20.0, 400.0, tempo) : 120.0;
+    std::array<bool, 2> present {}, legacyEnabled {};
+    for (int slot = 0; slot < (int) rackEffectParams.size(); ++slot)
+    {
+        const auto effect = getFxSlotEffect (slot);
+        if (juce::isPositiveAndBelow (effect, (int) present.size()))
+        {
+            present[(size_t) effect] = true;
+            legacyEnabled[(size_t) effect] |= getFxSlotEnabled (slot);
+        }
+    }
     for (int layer = 0; layer < 2; ++layer)
     {
         const auto& values = fxValues[(size_t) layer];
-        if (isLayerFxOn (1, layer, getFxSlotEnabled (1)) && values[(size_t) FxValue::reverbFreeze]->load() >= 0.5f)
+        if (present[1] && isLayerFxOn (1, layer, legacyEnabled[1]) && values[(size_t) FxValue::reverbFreeze]->load() >= 0.5f)
             seconds = juce::jmax (seconds, 30.0);
-        if (isLayerFxOn (0, layer, getFxSlotEnabled (0)))
+        if (present[0] && isLayerFxOn (0, layer, legacyEnabled[0]))
         {
             const auto feedback = juce::jlimit (0.0, 0.86, (double) values[(size_t) FxValue::delayFeedback]->load());
             const auto loopGain = 0.82 * 1.35 * feedback;
@@ -360,6 +381,7 @@ void OneShotSamplerAudioProcessor::Rack::prepare (double sampleRate, int samples
     reverbWetBuffer.setSize (2, juce::jmax (1, samplesPerBlock));
     reverbWetBuffer.clear();
     reverbPreDelayWritePosition = 0;
+    reverbFreezeWarmupSamples = 0;
     reverbPreDelayCurrent = 0.0f;
     reverbToneState = {};
     reverbHighPassState = {};
@@ -379,6 +401,9 @@ void OneShotSamplerAudioProcessor::Rack::prepare (double sampleRate, int samples
     flutterRandom = flutterRandomTarget = 0.0f;
     flutterRandomCountdown = 0;
     chorusFeedbackState = {};
+    chorusDriveSmooth.reset (sampleRate, 0.025);
+    chorusDriveSmooth.setCurrentAndTargetValue (0.0f);
+    previousChorusInput = {};
     flangerFeedbackState = {};
     textureBuffer.setSize (2, static_cast<int> (sampleRate * 2.5));
     textureBuffer.clear();
@@ -411,11 +436,6 @@ void OneShotSamplerAudioProcessor::Rack::process (OneShotSamplerAudioProcessor& 
     const auto& eqParamPointers = owner.eqParamPointers[(size_t) layer];
     const auto& eqBandTypes = owner.eqBandTypes[(size_t) layer];
     const auto value = [&owner, layer] (FxValue index) { return owner.fxValues[(size_t) layer][(size_t) index]->load(); };
-    const auto routed = [&] (int effect)
-    {
-        const auto route = (int) owner.routeParams[(size_t) effect]->load();
-        return route == layer;
-    };
     juce::dsp::AudioBlock<float> block (buffer);
     const auto tapSmooth = (float) (1.0 - std::exp (-1.0 / (0.03 * currentSampleRate)));
     const auto readInterpolated = [] (const juce::AudioBuffer<float>& source, int channel, float position)
@@ -531,7 +551,13 @@ void OneShotSamplerAudioProcessor::Rack::process (OneShotSamplerAudioProcessor& 
         p.roomSize = room;
         p.damping = damping;
         p.width = value (FxValue::reverbWidth);
-        p.freezeMode = juce::jmin (0.85f, value (FxValue::reverbFreeze));
+        const auto wantsFreeze = value (FxValue::reverbFreeze) >= 0.5f;
+        const auto freezeWarmup = juce::roundToInt (currentSampleRate * 0.12);
+        if (! wantsFreeze)
+            reverbFreezeWarmupSamples = 0;
+        // JUCE disables the reverb input in freeze mode. Let the tank fill
+        // first so a frozen preset can capture a note from a cold start.
+        p.freezeMode = wantsFreeze && reverbFreezeWarmupSamples >= freezeWarmup ? 1.0f : 0.0f;
         // Keep the tank generous but leave headroom for stacked processing.
         p.wetLevel = 0.40f + room * 0.16f;
         p.dryLevel = 0.0f;
@@ -562,6 +588,14 @@ void OneShotSamplerAudioProcessor::Rack::process (OneShotSamplerAudioProcessor& 
         juce::dsp::AudioBlock<float> wetBlock (reverbWetBuffer);
         auto wetView = wetBlock.getSubBlock (0, (size_t) buffer.getNumSamples());
         reverb.process (juce::dsp::ProcessContextReplacing<float> (wetView));
+        if (wantsFreeze && reverbFreezeWarmupSamples < freezeWarmup)
+        {
+            for (int frame = 0; frame < buffer.getNumSamples() && reverbFreezeWarmupSamples < freezeWarmup; ++frame)
+                if (reverbFreezeWarmupSamples > 0
+                    || std::abs (reverbWetBuffer.getSample (0, frame)) > 0.00001f
+                    || std::abs (reverbWetBuffer.getSample (1, frame)) > 0.00001f)
+                    ++reverbFreezeWarmupSamples;
+        }
         reverbMixSmooth.setTargetValue (mix);
         for (int frame = 0; frame < buffer.getNumSamples(); ++frame)
         {
@@ -583,6 +617,33 @@ void OneShotSamplerAudioProcessor::Rack::process (OneShotSamplerAudioProcessor& 
         const auto delayTarget = value (FxValue::chorusDelay) * 0.001f * (float) currentSampleRate;
         const auto feedback = value (FxValue::chorusFeedback);
         chorusMixSmooth.setTargetValue (value (FxValue::chorusMix));
+        chorusDriveSmooth.setTargetValue (value (FxValue::chorusDrive));
+
+        const auto driveInput = [this] (float input, size_t channel, float drive)
+        {
+            const auto previous = previousChorusInput[channel];
+            previousChorusInput[channel] = input;
+            if (drive <= 0.0f)
+                return input;
+
+            // First-order antiderivative antialiasing for x / (1 + |x|).
+            // Process the delay input only, leaving the direct signal clean.
+            const auto gain = 1.0f + drive * 10.0f;
+            const auto x = input * gain;
+            const auto last = previous * gain;
+            const auto delta = x - last;
+            const auto integral = [] (double v)
+            {
+                const auto magnitude = std::abs (v);
+                return magnitude - std::log1p (magnitude);
+            };
+            const auto midpoint = (x + last) * 0.5f;
+            const auto shaped = std::abs (delta) > 0.001f
+                ? static_cast<float> ((integral (x) - integral (last)) / delta)
+                : midpoint / (1.0f + std::abs (midpoint));
+            const auto saturated = shaped / std::sqrt (gain);
+            return input + drive * (saturated - input);
+        };
         // Never let the sweep reach below ~2 samples of delay (that read the oldest audio in the buffer).
         const auto depthTarget = 6.0f + depth * (float) currentSampleRate * 0.010f;
         if (modDelayCurrent[0] == 0.0f) { modDelayCurrent[0] = delayTarget; modSweepCurrent[0] = depthTarget; }
@@ -606,8 +667,9 @@ void OneShotSamplerAudioProcessor::Rack::process (OneShotSamplerAudioProcessor& 
             const auto wetRight = 0.5f * (rightVoiceA + rightVoiceB);
             chorusFeedbackState[0] = std::tanh (chorusFeedbackState[0] * feedback + wetLeft * 0.35f);
             chorusFeedbackState[1] = std::tanh (chorusFeedbackState[1] * feedback + wetRight * 0.35f);
-            chorusBuffer.setSample (0, chorusWritePosition, left + chorusFeedbackState[0] * std::abs (feedback) * 0.30f);
-            chorusBuffer.setSample (1, chorusWritePosition, right + chorusFeedbackState[1] * std::abs (feedback) * 0.30f);
+            const auto drive = chorusDriveSmooth.getNextValue();
+            chorusBuffer.setSample (0, chorusWritePosition, driveInput (left, 0, drive) + chorusFeedbackState[0] * std::abs (feedback) * 0.30f);
+            chorusBuffer.setSample (1, chorusWritePosition, driveInput (right, 1, drive) + chorusFeedbackState[1] * std::abs (feedback) * 0.30f);
             buffer.setSample (0, frame, left * (1.0f - mix) + wetLeft * mix);
             if (buffer.getNumChannels() > 1) buffer.setSample (1, frame, right * (1.0f - mix) + wetRight * mix);
             chorusWritePosition = (chorusWritePosition + 1) % chorusBuffer.getNumSamples();
@@ -821,8 +883,8 @@ void OneShotSamplerAudioProcessor::Rack::process (OneShotSamplerAudioProcessor& 
         {
             case 0: delayBuffer.clear(); delayWritePosition = 0; delayToneState = {}; delayTimeReady = false; break;
             case 1: reverb.reset(); reverbPreDelayBuffer.clear(); reverbPreDelayWritePosition = 0;
-                    reverbToneState = {}; reverbHighPassState = {}; reverbPreDelayCurrent = 0.0f; break;
-            case 2: chorusBuffer.clear(); chorusWritePosition = 0; chorusFeedbackState = {}; modDelayCurrent[0] = 0.0f; break;
+                    reverbFreezeWarmupSamples = 0; reverbToneState = {}; reverbHighPassState = {}; reverbPreDelayCurrent = 0.0f; break;
+            case 2: chorusBuffer.clear(); chorusWritePosition = 0; chorusFeedbackState = {}; previousChorusInput = {}; modDelayCurrent[0] = 0.0f; break;
             case 3: phaser.reset(); break;
             case 4: flangerBuffer.clear(); flangerWritePosition = 0; flangerFeedbackState = {}; modDelayCurrent[1] = 0.0f; break;
             case 5: eqBands = {}; for (auto& cache : eqCache) cache[0] = -1.0f; break;
@@ -1530,6 +1592,17 @@ void OneShotSamplerAudioProcessor::setStateInformation (const void* data, int si
                 const auto type = "eqBand" + juce::String (band) + "Type";
                 if (! state.hasProperty (fxParamId (1, type)) && state.hasProperty (type))
                     state.setProperty (fxParamId (1, type), state.getProperty (type), nullptr);
+            }
+            for (int layer = 0; layer < 2; ++layer)
+            {
+                const auto id = fxParamId (layer, "chorusDrive");
+                if (! state.getChildWithProperty ("id", id).isValid())
+                {
+                    juce::ValueTree drive ("PARAM");
+                    drive.setProperty ("id", id, nullptr);
+                    drive.setProperty ("value", 0.0f, nullptr);
+                    state.appendChild (drive, nullptr);
+                }
             }
             parameters.replaceState (state);
             if ((int) parameters.state.getProperty ("fxLayoutVersion", 0) < 7)

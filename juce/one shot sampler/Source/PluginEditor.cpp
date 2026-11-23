@@ -1,5 +1,6 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include "FactoryFxPresets.h"
 #include "BinaryData.h"
 
 namespace
@@ -609,24 +610,28 @@ juce::String EqCurvePad::prefixForBand (int band) const
 
 std::array<juce::Point<float>, 7> EqCurvePad::getHandles() const
 {
+    const auto sampleRate = juce::jmax (8000.0, audioProcessor.getSampleRate());
+    return getHandles (sampleRate, readCoefficients (sampleRate));
+}
+
+std::array<juce::Point<float>, 7> EqCurvePad::getHandles (double sampleRate, const BandCoefficients& coefficients) const
+{
     const auto area = getLocalBounds().reduced (12).toFloat();
     std::array<juce::Point<float>, 7> handles;
     for (int band = 0; band < 7; ++band)
     {
         const auto prefix = prefixForBand (band);
         const auto frequency = parameters.getRawParameterValue (prefix + "Freq")->load();
-        const auto response = getResponseAtFrequency (frequency);
+        const auto response = getResponseAtFrequency (frequency, sampleRate, coefficients);
         handles[(size_t) band] = { area.getX() + area.getWidth() * positionFromFrequency (frequency),
                                     area.getCentreY() - juce::jlimit (-24.0f, 24.0f, response) / 24.0f * area.getHeight() * 0.40f };
     }
     return handles;
 }
 
-float EqCurvePad::getResponseAtFrequency (float frequency) const
+EqCurvePad::BandCoefficients EqCurvePad::readCoefficients (double sampleRate) const
 {
-    const auto sampleRate = juce::jmax (8000.0, audioProcessor.getSampleRate());
-    const auto safeFrequency = juce::jlimit (eqMinFrequency, (float) sampleRate * 0.49f, frequency);
-    float responseDb = 0.0f;
+    BandCoefficients coefficients;
     for (int band = 0; band < 7; ++band)
     {
         const auto prefix = prefixForBand (band);
@@ -634,9 +639,17 @@ float EqCurvePad::getResponseAtFrequency (float frequency) const
         const auto q = parameters.getRawParameterValue (prefix + "Q")->load();
         const auto gain = parameters.getRawParameterValue (prefix + "Gain")->load();
         const auto type = (int) parameters.state.getProperty (prefix + "Type", band == 0 ? 4 : band == 6 ? 5 : 0);
-        if (const auto coefficients = makeEqCoefficients (sampleRate, bandFrequency, q, gain, type))
-            responseDb += juce::Decibels::gainToDecibels (juce::jmax (0.000001f, (float) coefficients->getMagnitudeForFrequency (safeFrequency, sampleRate)));
+        coefficients[(size_t) band] = makeEqCoefficients (sampleRate, bandFrequency, q, gain, type);
     }
+    return coefficients;
+}
+
+float EqCurvePad::getResponseAtFrequency (float frequency, double sampleRate, const BandCoefficients& coefficients)
+{
+    const auto safeFrequency = juce::jlimit (eqMinFrequency, (float) sampleRate * 0.49f, frequency);
+    float responseDb = 0.0f;
+    for (const auto& band : coefficients)
+        responseDb += juce::Decibels::gainToDecibels (juce::jmax (0.000001f, (float) band->getMagnitudeForFrequency (safeFrequency, sampleRate)));
     return juce::jlimit (-60.0f, 36.0f, responseDb);
 }
 
@@ -747,14 +760,16 @@ void EqCurvePad::paint (juce::Graphics& g)
     }
     g.setColour (ink.withAlpha (0.30f));
     g.drawHorizontalLine ((int) area.getCentreY(), area.getX(), area.getRight());
-    const auto handles = getHandles();
+    const auto sampleRate = juce::jmax (8000.0, audioProcessor.getSampleRate());
+    const auto coefficients = readCoefficients (sampleRate);
+    const auto handles = getHandles (sampleRate, coefficients);
     // Use JUCE's exact IIR coefficient response, matching the audio DSP itself.
     juce::Path curve;
     for (int pixel = 0; pixel < (int) area.getWidth(); pixel += 2)
     {
         const auto x = area.getX() + (float) pixel;
         const auto frequency = frequencyFromPosition ((x - area.getX()) / area.getWidth());
-        const auto response = getResponseAtFrequency (frequency);
+        const auto response = getResponseAtFrequency (frequency, sampleRate, coefficients);
         const auto y = area.getCentreY() - juce::jlimit (-24.0f, 24.0f, response) / 24.0f * area.getHeight() * 0.40f;
         if (pixel == 0) curve.startNewSubPath (x, y); else curve.lineTo (x, y);
     }
@@ -774,13 +789,6 @@ void EqCurvePad::paint (juce::Graphics& g)
     }
 }
 
-juce::Colour PresetSelector::accentForEffect (int effect)
-{
-    // The line design has a single ink colour; modules are told apart by name.
-    juce::ignoreUnused (effect);
-    return modularInk;
-}
-
 juce::String PresetSelector::labelForEffect (int effect)
 {
     switch (effect)
@@ -795,31 +803,19 @@ juce::String PresetSelector::labelForEffect (int effect)
 
 juce::String PresetSelector::presetNameFor (int effect, int preset)
 {
-    static const std::array<juce::String, 4> eq { "Spectrum", "Low cut", "Warmth", "Air" };
-    static const std::array<juce::String, 4> reverb { "Space", "Chamber", "Halo", "Drift" };
-    static const std::array<juce::String, 4> granular { "Grain", "Shards", "Cloud", "Dust" };
-    static const std::array<juce::String, 4> chorus { "Detune", "Wide", "VHS", "Drift" };
-    static const std::array<juce::String, 4> random { "Chance", "Flux", "Tilt", "Ripple" };
-    const auto index = (size_t) juce::jlimit (0, 3, preset);
-    switch (effect) { case 5: return eq[index]; case 7: return granular[index]; case 2: return chorus[index]; case 9: return random[index]; default: return reverb[index]; }
+    const auto bank = FactoryFxPresets::bankFor (effect);
+    return bank.presets[juce::jlimit (0, bank.size - 1, preset)].name;
 }
 
 juce::String PresetSelector::presetIdFor (int effect, int preset)
 {
-    juce::String prefix = "verb";
-    switch (effect) { case 5: prefix = "eq"; break; case 7: prefix = "gran"; break; case 2: prefix = "chor"; break; case 9: prefix = "rand"; break; default: break; }
-    return "frwk_" + prefix + "00" + juce::String (juce::jlimit (0, 3, preset) + 1);
+    const auto bank = FactoryFxPresets::bankFor (effect);
+    return "frwk_" + juce::String (bank.prefix) + juce::String (preset + 1).paddedLeft ('0', 3);
 }
 
 juce::String PresetSelector::presetMetaFor (int effect, int preset)
 {
-    static const std::array<juce::String, 4> eq { "7-band neutral curve", "high-pass 95 Hz", "analogue warmth", "high-shelf lift" };
-    static const std::array<juce::String, 4> reverb { "room / 2.4s decay", "chamber / 1.3s decay", "frozen bloom / wide", "hall / 4.2s decay" };
-    static const std::array<juce::String, 4> granular { "185 ms / 5 grains", "95 ms / pitch scatter", "340 ms / cloud mode", "62 ms / dense field" };
-    static const std::array<juce::String, 4> chorus { "subtle dual voice", "wide stereo motion", "slow cassette drift", "deep ensemble motion" };
-    static const std::array<juce::String, 4> random { "controlled variance", "tempo-linked flux", "tilted probability", "slow evolving chance" };
-    const auto index = (size_t) juce::jlimit (0, 3, preset);
-    switch (effect) { case 5: return eq[index]; case 7: return granular[index]; case 2: return chorus[index]; case 9: return random[index]; default: return reverb[index]; }
+    return FactoryFxPresets::bankFor (effect).presets[preset].description;
 }
 
 int PresetSelector::effectForFilterIndex (int index)
@@ -860,16 +856,22 @@ juce::Rectangle<int> PresetSelector::presetRowBounds (int index) const
 {
     auto list = menuBounds().reduced (14, 12).withTrimmedTop (42);
     constexpr int rowHeight = 39;
-    return list.withTrimmedTop (juce::jlimit (0, 3, index) * (rowHeight + 3)).withHeight (rowHeight);
+    constexpr int rowsPerColumn = 6;
+    constexpr int columnGap = 8;
+    if (FactoryFxPresets::bankFor (filteredEffect).size > rowsPerColumn)
+    {
+        const auto width = (list.getWidth() - columnGap) / 2;
+        list = list.withX (list.getX() + (index / rowsPerColumn) * (width + columnGap)).withWidth (width);
+    }
+
+    return list.withTrimmedTop ((index % rowsPerColumn) * (rowHeight + 3)).withHeight (rowHeight);
 }
 
 void PresetSelector::updateBounds()
 {
     if (closedBounds.isEmpty())
         return;
-    // 44 px header + 8 px separation + 234 px menu: enough vertical room for
-    // the filter row, four complete preset rows, and the bottom inset.
-    setBounds (closedBounds.withHeight (isOpen_ ? 286 : closedBounds.getHeight()));
+    setBounds (closedBounds.withHeight (isOpen_ ? 370 : closedBounds.getHeight()));
     if (isOpen_)
         toFront (false);
 }
@@ -887,7 +889,7 @@ void PresetSelector::setModule (int effect, int preset)
     activeEffect = effect;
     if (! isOpen_)
         filteredEffect = effect;
-    selectedPreset = juce::jlimit (0, 3, preset);
+    selectedPreset = juce::jlimit (0, FactoryFxPresets::bankFor (effect).size - 1, preset);
     repaint();
 }
 
@@ -927,7 +929,7 @@ void PresetSelector::paint (juce::Graphics& g)
 
     const auto circleSize = pill.getHeight() - 12.0f;
     const auto circle = juce::Rectangle<float> (pill.getRight() - circleSize - 6.0f, pill.getY() + 6.0f, circleSize, circleSize);
-    g.drawText ("0" + juce::String (selectedPreset + 1) + " / 04", (int) circle.getX() - 96, (int) pill.getY(), 84, (int) pill.getHeight(), juce::Justification::centredRight);
+    g.drawText (juce::String (selectedPreset + 1).paddedLeft ('0', 2) + " / " + juce::String (FactoryFxPresets::bankFor (activeEffect).size).paddedLeft ('0', 2), (int) circle.getX() - 96, (int) pill.getY(), 84, (int) pill.getHeight(), juce::Justification::centredRight);
     g.drawEllipse (circle.reduced (0.5f), 1.0f);
     // Draw the disclosure marker ourselves so it stays crisp in every font.
     const auto chevronCentre = circle.getCentre();
@@ -978,10 +980,11 @@ void PresetSelector::paint (juce::Graphics& g)
         g.drawFittedText (labelForEffect (effect).replace (" preset", ""), (int) chip.getX() + 6, (int) chip.getY(), (int) chip.getWidth() - 12, (int) chip.getHeight(), juce::Justification::centred, 1);
     }
 
-    for (int index = 0; index < 4; ++index)
+    const auto filteredPreset = readPresetForEffect ? readPresetForEffect (filteredEffect) : selectedPreset;
+    for (int index = 0; index < FactoryFxPresets::bankFor (filteredEffect).size; ++index)
     {
         const auto row = presetRowBounds (index).toFloat();
-        const auto selected = index == (readPresetForEffect ? readPresetForEffect (filteredEffect) : selectedPreset);
+        const auto selected = index == filteredPreset;
         const auto hovered = index == hoveredPreset;
         if (hovered)
         {
@@ -1019,7 +1022,8 @@ void PresetSelector::mouseDown (const juce::MouseEvent& event)
     for (int step = 0; step < 2; ++step)
         if (stepBounds (step).contains (point))
         {
-            selectedPreset = (selectedPreset + (step == 0 ? 3 : 1)) % 4;
+            const auto count = FactoryFxPresets::bankFor (activeEffect).size;
+            selectedPreset = (selectedPreset + count + (step == 0 ? -1 : 1)) % count;
             if (onPresetSelected) onPresetSelected (activeEffect, selectedPreset);
             repaint();
             return;
@@ -1036,7 +1040,7 @@ void PresetSelector::mouseDown (const juce::MouseEvent& event)
             return;
         }
 
-    for (int index = 0; index < 4; ++index)
+    for (int index = 0; index < FactoryFxPresets::bankFor (filteredEffect).size; ++index)
         if (presetRowBounds (index).contains (point))
         {
             activeEffect = filteredEffect;
@@ -1060,7 +1064,7 @@ void PresetSelector::mouseMove (const juce::MouseEvent& event)
 {
     int nextHovered = -1;
     if (isOpen_)
-        for (int index = 0; index < 4; ++index)
+        for (int index = 0; index < FactoryFxPresets::bankFor (filteredEffect).size; ++index)
             if (presetRowBounds (index).contains (event.getPosition()))
                 nextHovered = index;
 
@@ -1542,10 +1546,12 @@ OneShotSamplerAudioProcessorEditor::OneShotSamplerAudioProcessorEditor (OneShotS
     setupControl (chorusDepthSlider, chorusDepthLabel, "Depth");
     setupControl (chorusDelaySlider, chorusDelayLabel, "Delay");
     setupControl (chorusFeedbackSlider, chorusFeedbackLabel, "Feedback");
+    setupControl (chorusDriveSlider, chorusDriveLabel, "Drive");
     setupControl (chorusMixSlider, chorusMixLabel, "Mix");
     chorusRateAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (audioProcessor.parameters, "chorusRate", chorusRateSlider);
     chorusDepthAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (audioProcessor.parameters, "chorusDepth", chorusDepthSlider);
     chorusDelayAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (audioProcessor.parameters, "chorusDelay", chorusDelaySlider);
+    chorusDriveAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (audioProcessor.parameters, "chorusDrive", chorusDriveSlider);
     chorusFeedbackAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (audioProcessor.parameters, "chorusFeedback", chorusFeedbackSlider);
     chorusMixAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (audioProcessor.parameters, "chorusMix", chorusMixSlider);
 
@@ -1617,8 +1623,6 @@ OneShotSamplerAudioProcessorEditor::OneShotSamplerAudioProcessorEditor (OneShotS
     frameworksLookAndFeel.setColour (juce::PopupMenu::highlightedBackgroundColourId, modularInk);
     frameworksLookAndFeel.setColour (juce::PopupMenu::highlightedTextColourId, modularBlue);
     setupPreset (delayPreset, { "frwk_delay001", "frwk_delay002", "frwk_delay003", "frwk_delay004" });
-    setupPreset (reverbPreset, { "frwk_reverb001", "frwk_reverb002", "frwk_reverb003", "frwk_reverb004" });
-    setupPreset (chorusPreset, { "frwk_chorus001", "frwk_chorus002", "frwk_chorus003", "frwk_chorus004" });
     setupPreset (phaserPreset, { "frwk_phaser001", "frwk_phaser002", "frwk_phaser003", "frwk_phaser004" });
 
     const auto setParameter = [this] (const char* id, float value)
@@ -1639,19 +1643,6 @@ OneShotSamplerAudioProcessorEditor::OneShotSamplerAudioProcessorEditor (OneShotS
         const float values[][3] = { { 0.125f, 0.24f, 0.16f }, { 0.375f, 0.43f, 0.27f }, { 0.75f, 0.58f, 0.34f }, { 1.50f, 0.68f, 0.31f } };
         const auto& v = values[juce::jlimit (0, 3, delayPreset.getSelectedId() - 1)];
         setParameter ("delayTime", v[0]); setParameter ("delayFeedback", v[1]); setParameter ("delayMix", v[2]);
-    };
-    reverbPreset.onChange = [setParameter, this]
-    {
-        // Room, bloom, frozen shimmer and wide hall.
-        const float values[][5] = { { 0.20f, 0.64f, 0.72f, 0.0f, 0.16f }, { 0.56f, 0.37f, 0.94f, 0.0f, 0.29f }, { 0.82f, 0.18f, 1.0f, 1.0f, 0.38f }, { 0.92f, 0.30f, 1.0f, 0.0f, 0.42f } };
-        const auto& v = values[juce::jlimit (0, 3, reverbPreset.getSelectedId() - 1)];
-        setParameter ("reverbRoomSize", v[0]); setParameter ("reverbDamping", v[1]); setParameter ("reverbWidth", v[2]); setParameter ("reverbFreeze", v[3]); setParameter ("reverbMix", v[4]);
-    };
-    chorusPreset.onChange = [setParameter, this]
-    {
-        const float values[][5] = { { 0.33f, 0.28f, 6.5f, 0.02f, 0.20f }, { 0.72f, 0.46f, 11.0f, 0.08f, 0.28f }, { 0.16f, 0.66f, 17.0f, 0.14f, 0.36f }, { 1.35f, 0.74f, 21.0f, 0.22f, 0.42f } };
-        const auto& v = values[juce::jlimit (0, 3, chorusPreset.getSelectedId() - 1)];
-        setParameter ("chorusRate", v[0]); setParameter ("chorusDepth", v[1]); setParameter ("chorusDelay", v[2]); setParameter ("chorusFeedback", v[3]); setParameter ("chorusMix", v[4]);
     };
     phaserPreset.onChange = [setParameter, this]
     {
@@ -1685,7 +1676,7 @@ OneShotSamplerAudioProcessorEditor::OneShotSamplerAudioProcessorEditor (OneShotS
     granularSizeAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (audioProcessor.parameters, "granularSize", granularSizeSlider); granularDensityAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (audioProcessor.parameters, "granularDensity", granularDensitySlider); granularPitchAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (audioProcessor.parameters, "granularPitch", granularPitchSlider); granularMixAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (audioProcessor.parameters, "granularMix", granularMixSlider);
     harmonyShiftAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (audioProcessor.parameters, "harmonyShift", harmonyShiftSlider); harmonyDetuneAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (audioProcessor.parameters, "harmonyDetune", harmonyDetuneSlider); harmonyMixAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (audioProcessor.parameters, "harmonyMix", harmonyMixSlider);
     randomAmountAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (audioProcessor.parameters, "randomAmount", randomAmountSlider); randomRateAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (audioProcessor.parameters, "randomRate", randomRateSlider); randomMixAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (audioProcessor.parameters, "randomMix", randomMixSlider);
-    setupPreset (granularPreset, { "frwk_granular001", "frwk_granular002", "frwk_granular003", "frwk_granular004" }); setupPreset (harmonyPreset, { "frwk_orbit001", "frwk_orbit002", "frwk_orbit003", "frwk_orbit004" }); setupPreset (randomPreset, { "frwk_random001", "frwk_random002", "frwk_random003", "frwk_random004" });
+    setupPreset (harmonyPreset, { "frwk_orbit001", "frwk_orbit002", "frwk_orbit003", "frwk_orbit004" });
     setupPreset (eqPreset, { "frwk_eq001", "frwk_eq002", "frwk_eq003", "frwk_eq004" });
     eqPreset.onChange = [this]
     {
@@ -1711,9 +1702,7 @@ OneShotSamplerAudioProcessorEditor::OneShotSamplerAudioProcessorEditor (OneShotS
         const auto& v = values[juce::jlimit (0, 3, flutterPreset.getSelectedId() - 1)];
         setParameter ("flutterRate", v[0]); setParameter ("flutterDepth", v[1]); setParameter ("flutterDelay", v[2]); setParameter ("flutterMix", v[3]);
     };
-    granularPreset.onChange = [setParameter, this] { const float v[][4] { { 185, 5, 0, .24f }, { 95, 11, 5, .32f }, { 340, 2.5f, -12, .40f }, { 62, 17, 12, .30f } }; const auto& p = v[juce::jlimit (0, 3, granularPreset.getSelectedId() - 1)]; setParameter ("granularSize", p[0]); setParameter ("granularDensity", p[1]); setParameter ("granularPitch", p[2]); setParameter ("granularMix", p[3]); };
     harmonyPreset.onChange = [setParameter, this] { const float v[][3] { { -5, 5, .18f }, { 2, 11, .24f }, { 8, 17, .30f }, { 12, 28, .36f } }; const auto& p = v[juce::jlimit (0, 3, harmonyPreset.getSelectedId() - 1)]; setParameter ("harmonyShift", p[0]); setParameter ("harmonyDetune", p[1]); setParameter ("harmonyMix", p[2]); };
-    randomPreset.onChange = [setParameter, this] { const float v[][3] { { .12f, 2, .12f }, { .30f, 5, .20f }, { .55f, 9, .28f }, { .82f, 15, .34f } }; const auto& p = v[juce::jlimit (0, 3, randomPreset.getSelectedId() - 1)]; setParameter ("randomAmount", p[0]); setParameter ("randomRate", p[1]); setParameter ("randomMix", p[2]); };
 
     presetSelector.setWantsKeyboardFocus (true);
     presetSelector.readPresetForEffect = [this] (int effect)
@@ -1722,13 +1711,28 @@ OneShotSamplerAudioProcessorEditor::OneShotSamplerAudioProcessorEditor (OneShotS
     };
     presetSelector.onPresetSelected = [this] (int effect, int preset)
     {
-        juce::ComboBox* source = effect == 5 ? &eqPreset
-                                : effect == 7 ? &granularPreset
-                                : effect == 2 ? &chorusPreset
-                                : effect == 9 ? &randomPreset : &reverbPreset;
+        const auto bank = FactoryFxPresets::bankFor (effect);
+        if (! juce::isPositiveAndBelow (preset, bank.size))
+            return;
+
+        const auto layer = audioProcessor.getEffectLayer (effect);
+        if (effect == 5)
+        {
+            eqPreset.setSelectedId (preset + 1, juce::dontSendNotification);
+            eqPreset.onChange();
+        }
+        else
+        {
+            const auto& values = bank.presets[preset].values;
+            for (size_t i = 0; i < bank.parameters.size() && bank.parameters[i] != nullptr; ++i)
+                if (auto* parameter = audioProcessor.parameters.getParameter (audioProcessor.fxParamId (layer, bank.parameters[i])))
+                {
+                    juce::ParameterAttachment attachment (*parameter, [] (float) {});
+                    attachment.setValueAsCompleteGesture (values[i]);
+                }
+        }
+
         audioProcessor.parameters.state.setProperty (presetBankKey (effect), preset, nullptr);
-        source->setSelectedId (preset + 1, juce::dontSendNotification);
-        if (source->onChange) source->onChange();
         selectEffect (effect);
     };
     for (auto& route : sourceRoutes)
@@ -1843,10 +1847,6 @@ OneShotSamplerAudioProcessorEditor::OneShotSamplerAudioProcessorEditor (OneShotS
     setOpaque (true);
     setResizable (true, true);
     updateResizeLimits();
-    // Open compactly so the host workspace stays visible. The corner grip
-    // still lets the user grow the board up to the display's fit limit.
-    const auto initialWidth = juce::jmin (1150, juce::roundToInt (maximumEditorWidth * 0.9));
-    setSize (initialWidth, juce::roundToInt (initialWidth / boardAspect));
     polishKnobs();
     startTimerHz (60);
 }
@@ -1916,6 +1916,12 @@ namespace
     }
 }
 
+void OneShotSamplerAudioProcessorEditor::setScaleFactor (float newScale)
+{
+    juce::AudioProcessorEditor::setScaleFactor (newScale);
+    updateResizeLimits();
+}
+
 void OneShotSamplerAudioProcessorEditor::updateResizeLimits()
 {
     const auto& displays = juce::Desktop::getInstance().getDisplays();
@@ -1937,11 +1943,24 @@ void OneShotSamplerAudioProcessorEditor::updateResizeLimits()
     if (maxWidth == maximumEditorWidth)
         return;
 
+    const auto useAutomaticSize = maximumEditorWidth == 0
+                                  || juce::Point<int> (getWidth(), getHeight()) == automaticEditorSize;
     maximumEditorWidth = maxWidth;
-    const auto minWidth = juce::jmin (boardWidth / 2, maxWidth / 2);
+    const auto minWidth = juce::jmin (560, maxWidth / 2);
     setResizeLimits (minWidth, juce::jmax (1, juce::roundToInt (minWidth / boardAspect)),
                      maxWidth, juce::jmax (1, juce::roundToInt (maxWidth / boardAspect)));
     getConstrainer()->setFixedAspectRatio (boardAspect);
+
+    if (useAutomaticSize)
+    {
+        const auto width = juce::jmin (1050, juce::roundToInt (maxWidth * 0.70));
+        automaticEditorSize = { width, juce::jmax (1, juce::roundToInt (width / boardAspect)) };
+        setSize (automaticEditorSize.x, automaticEditorSize.y);
+    }
+    else
+    {
+        automaticEditorSize = {};
+    }
 }
 
 void OneShotSamplerAudioProcessorEditor::paint (juce::Graphics& g)
@@ -2742,14 +2761,14 @@ void OneShotSamplerAudioProcessorEditor::resized()
         &delayEnabledButton, &reverbEnabledButton, &chorusEnabledButton, &phaserEnabledButton, &flangerEnabledButton, &eqEnabledButton, &flutterEnabledButton,
         &granularEnabledButton, &harmonyEnabledButton, &randomEnabledButton,
         &delayTimeSlider, &delayTimeLabel, &delayFeedbackSlider, &delayFeedbackLabel, &delayMixSlider, &delayMixLabel, &delayPreset,
-        &reverbMixSlider, &reverbMixLabel, &reverbRoomSizeSlider, &reverbRoomSizeLabel, &reverbDampingSlider, &reverbDampingLabel, &reverbWidthSlider, &reverbWidthLabel, &reverbFreezeSlider, &reverbFreezeLabel, &reverbPreset,
-        &chorusRateSlider, &chorusRateLabel, &chorusDepthSlider, &chorusDepthLabel, &chorusDelaySlider, &chorusDelayLabel, &chorusFeedbackSlider, &chorusFeedbackLabel, &chorusMixSlider, &chorusMixLabel, &chorusPreset,
+        &reverbMixSlider, &reverbMixLabel, &reverbRoomSizeSlider, &reverbRoomSizeLabel, &reverbDampingSlider, &reverbDampingLabel, &reverbWidthSlider, &reverbWidthLabel, &reverbFreezeSlider, &reverbFreezeLabel,
+        &chorusRateSlider, &chorusRateLabel, &chorusDepthSlider, &chorusDepthLabel, &chorusDelaySlider, &chorusDelayLabel, &chorusFeedbackSlider, &chorusFeedbackLabel, &chorusMixSlider, &chorusMixLabel, &chorusDriveSlider, &chorusDriveLabel,
         &phaserRateSlider, &phaserRateLabel, &phaserDepthSlider, &phaserDepthLabel, &phaserFeedbackSlider, &phaserFeedbackLabel, &phaserMixSlider, &phaserMixLabel, &phaserPreset,
         &flangerRateSlider, &flangerRateLabel, &flangerDepthSlider, &flangerDepthLabel, &flangerDelaySlider, &flangerDelayLabel, &flangerFeedbackSlider, &flangerFeedbackLabel, &flangerMixSlider, &flangerMixLabel, &flangerPreset,
         &flutterRateSlider, &flutterRateLabel, &flutterDepthSlider, &flutterDepthLabel, &flutterDelaySlider, &flutterDelayLabel, &flutterMixSlider, &flutterMixLabel, &flutterPreset,
-        &granularSizeSlider, &granularSizeLabel, &granularDensitySlider, &granularDensityLabel, &granularPitchSlider, &granularPitchLabel, &granularMixSlider, &granularMixLabel, &granularPreset,
+        &granularSizeSlider, &granularSizeLabel, &granularDensitySlider, &granularDensityLabel, &granularPitchSlider, &granularPitchLabel, &granularMixSlider, &granularMixLabel,
         &harmonyShiftSlider, &harmonyShiftLabel, &harmonyDetuneSlider, &harmonyDetuneLabel, &harmonyMixSlider, &harmonyMixLabel, &harmonyPreset,
-        &randomAmountSlider, &randomAmountLabel, &randomRateSlider, &randomRateLabel, &randomMixSlider, &randomMixLabel, &randomPreset,
+        &randomAmountSlider, &randomAmountLabel, &randomRateSlider, &randomRateLabel, &randomMixSlider, &randomMixLabel,
         &eqLowSlider, &eqLowLabel, &eqMidSlider, &eqMidLabel, &eqHighSlider, &eqHighLabel, &eqCurvePad, &eqPreset }) hide (*component);
 
     if (sourceDecks[0] != nullptr) sourceDecks[0]->setBounds (beta2SourceBounds);
@@ -2818,13 +2837,14 @@ void OneShotSamplerAudioProcessorEditor::resized()
     };
     const auto placeEngineGrid = [&placeEngineControl] (std::initializer_list<std::pair<juce::Slider*, juce::Label*>> controls, juce::Rectangle<int> area, juce::Colour labelColour, juce::Colour dialColour)
     {
-        const auto cellWidth = area.getWidth() / 2;
+        constexpr int columns = 3;
+        const auto cellWidth = area.getWidth() / columns;
         const auto cellHeight = area.getHeight() / 2;
         int index = 0;
         for (const auto& control : controls)
         {
             placeEngineControl (*control.first, *control.second,
-                                { area.getX() + (index % 2) * cellWidth, area.getY() + (index / 2) * cellHeight, cellWidth, cellHeight }, labelColour, dialColour);
+                                { area.getX() + (index % columns) * cellWidth, area.getY() + (index / columns) * cellHeight, cellWidth, cellHeight }, labelColour, dialColour);
             ++index;
         }
     };
@@ -2856,7 +2876,7 @@ void OneShotSamplerAudioProcessorEditor::resized()
     placeEngineRow ({ { &reverbRoomSizeSlider, &reverbRoomSizeLabel }, { &reverbDampingSlider, &reverbDampingLabel }, { &reverbWidthSlider, &reverbWidthLabel }, { &reverbMixSlider, &reverbMixLabel } }, engineControls (beta2EffectTabBounds[0]), light, reverbDial);
     placeEngineRow ({ { &granularSizeSlider, &granularSizeLabel }, { &granularDensitySlider, &granularDensityLabel }, { &granularPitchSlider, &granularPitchLabel }, { &granularMixSlider, &granularMixLabel } }, engineControls (beta2EffectTabBounds[1]), light, granularDial);
     placeEngineRow ({ { &randomAmountSlider, &randomAmountLabel }, { &randomRateSlider, &randomRateLabel }, { &randomMixSlider, &randomMixLabel } }, engineControls (beta2EffectTabBounds[2]), light, randomDial);
-    placeEngineGrid ({ { &chorusRateSlider, &chorusRateLabel }, { &chorusDepthSlider, &chorusDepthLabel }, { &chorusDelaySlider, &chorusDelayLabel }, { &chorusMixSlider, &chorusMixLabel } }, engineControls (beta2EffectTabBounds[3], true), light, chorusDial);
+    placeEngineGrid ({ { &chorusRateSlider, &chorusRateLabel }, { &chorusDepthSlider, &chorusDepthLabel }, { &chorusDelaySlider, &chorusDelayLabel }, { &chorusFeedbackSlider, &chorusFeedbackLabel }, { &chorusDriveSlider, &chorusDriveLabel }, { &chorusMixSlider, &chorusMixLabel } }, engineControls (beta2EffectTabBounds[3], true), light, chorusDial);
     placeEngineRow ({ { &eqLowSlider, &eqLowLabel }, { &eqMidSlider, &eqMidLabel }, { &eqHighSlider, &eqHighLabel } }, engineControls (beta2EffectTabBounds[4]), light, eqDial);
 
     // Give every part of each card the same immediate activation behaviour.
@@ -2869,34 +2889,9 @@ void OneShotSamplerAudioProcessorEditor::resized()
         cardHitTargets[i]->setVisible (true);
         cardHitTargets[i]->toBack();
     }
-    // The header field owns its full pill and menu surface. The old ComboBoxes
-    // remain state carriers only; they are never drawn in the Beta 2 board.
-    const auto showHeaderPreset = [this] (int effect, juce::ComboBox&)
-    {
-        presetSelector.setVisible (true);
-        presetSelector.setLayoutBounds (beta2PresetBounds);
-        presetSelector.setModule (effect, (int) audioProcessor.parameters.state.getProperty (presetBankKey (effect), 0));
-    };
-    if (selectedFx == 5)
-    {
-        showHeaderPreset (5, eqPreset);
-    }
-    else if (selectedFx == 7)
-    {
-        showHeaderPreset (7, granularPreset);
-    }
-    else if (selectedFx == 9)
-    {
-        showHeaderPreset (9, randomPreset);
-    }
-    else if (selectedFx == 2)
-    {
-        showHeaderPreset (2, chorusPreset);
-    }
-    else
-    {
-        showHeaderPreset (1, reverbPreset);
-    }
+    presetSelector.setVisible (true);
+    presetSelector.setLayoutBounds (beta2PresetBounds);
+    presetSelector.setModule (selectedFx, (int) audioProcessor.parameters.state.getProperty (presetBankKey (selectedFx), 0));
 
     polishKnobs();
     layoutLiveViews();
@@ -3110,6 +3105,7 @@ void OneShotSamplerAudioProcessorEditor::syncFxBanks()
     if (changed[2]) bind (2, chorusDelayAttachment, chorusDelaySlider, "chorusDelay");
     if (changed[2]) bind (2, chorusFeedbackAttachment, chorusFeedbackSlider, "chorusFeedback");
     if (changed[2]) bind (2, chorusMixAttachment, chorusMixSlider, "chorusMix");
+    if (changed[2]) bind (2, chorusDriveAttachment, chorusDriveSlider, "chorusDrive");
     if (changed[3]) bind (3, phaserRateAttachment, phaserRateSlider, "phaserRate");
     if (changed[3]) bind (3, phaserDepthAttachment, phaserDepthSlider, "phaserDepth");
     if (changed[3]) bind (3, phaserFeedbackAttachment, phaserFeedbackSlider, "phaserFeedback");
@@ -3171,7 +3167,7 @@ void OneShotSamplerAudioProcessorEditor::polishKnobs()
         { &reverbMixSlider, &reverbMixLabel }, { &reverbRoomSizeSlider, &reverbRoomSizeLabel }, { &reverbDampingSlider, &reverbDampingLabel },
         { &reverbWidthSlider, &reverbWidthLabel }, { &reverbFreezeSlider, &reverbFreezeLabel },
         { &chorusRateSlider, &chorusRateLabel }, { &chorusDepthSlider, &chorusDepthLabel }, { &chorusDelaySlider, &chorusDelayLabel },
-        { &chorusFeedbackSlider, &chorusFeedbackLabel }, { &chorusMixSlider, &chorusMixLabel },
+        { &chorusFeedbackSlider, &chorusFeedbackLabel }, { &chorusMixSlider, &chorusMixLabel }, { &chorusDriveSlider, &chorusDriveLabel },
         { &phaserRateSlider, &phaserRateLabel }, { &phaserDepthSlider, &phaserDepthLabel }, { &phaserFeedbackSlider, &phaserFeedbackLabel }, { &phaserMixSlider, &phaserMixLabel },
         { &flangerRateSlider, &flangerRateLabel }, { &flangerDepthSlider, &flangerDepthLabel }, { &flangerDelaySlider, &flangerDelayLabel },
         { &flangerFeedbackSlider, &flangerFeedbackLabel }, { &flangerMixSlider, &flangerMixLabel },
