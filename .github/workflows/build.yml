@@ -6,7 +6,7 @@ on:
 
 jobs:
   build:
-    runs-on: macos-15-intel
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
@@ -58,7 +58,7 @@ jobs:
           stage_bundle() {
             local bundle="$1" destination="$2" executable
             executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$bundle/Contents/Info.plist")"
-            lipo -verify_arch arm64 x86_64 "$bundle/Contents/MacOS/$executable"
+            lipo "$bundle/Contents/MacOS/$executable" -verify_arch arm64 x86_64
             codesign --verify --deep --strict "$bundle"
             mkdir -p "$root/$destination"
             ditto "$bundle" "$root/$destination/$(basename "$bundle")"
