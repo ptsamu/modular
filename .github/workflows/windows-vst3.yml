@@ -19,14 +19,18 @@ jobs:
           sparse-checkout: |
             /juce/one shot sampler/CMakeLists.txt
             /juce/one shot sampler/Source/
+            /tests/audio-regression.cpp
       - name: Get JUCE
         run: git clone --depth 1 --branch 8.0.15 https://github.com/juce-framework/JUCE.git "juce/one shot sampler/JUCE"
       - name: Configure
         working-directory: juce/one shot sampler
-        run: cmake -S . -B ci-build -G "Visual Studio 17 2022" -A x64 -DMODULAR_SKIP_DRIFT_FIX=ON
+        run: cmake -S . -B ci-build -G "Visual Studio 17 2022" -A x64 -DMODULAR_SKIP_DRIFT_FIX=ON -DMODULAR_BUILD_AUDIO_TESTS=ON
       - name: Build VST3
         working-directory: juce/one shot sampler
-        run: cmake --build ci-build --config Release --target OneShotSampler_VST3 --parallel 4
+        run: cmake --build ci-build --config Release --target OneShotSampler_VST3 ModularAudioRegression --parallel 4
+      - name: Run audio regression
+        working-directory: juce/one shot sampler
+        run: ctest --test-dir ci-build -C Release --output-on-failure -V
       - name: Package VST3 bundle
         working-directory: juce/one shot sampler
         run: |
