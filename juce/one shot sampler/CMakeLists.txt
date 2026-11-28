@@ -64,6 +64,7 @@ if(MODULAR_BUILD_AUDIO_TESTS)
         Source
         "$<TARGET_PROPERTY:OneShotSampler,INCLUDE_DIRECTORIES>"
     )
+    target_compile_features(ModularAudioRegression PRIVATE cxx_std_17)
     target_compile_definitions(ModularAudioRegression PRIVATE "$<TARGET_PROPERTY:OneShotSampler,COMPILE_DEFINITIONS>")
     target_link_libraries(ModularAudioRegression PRIVATE OneShotSampler)
     add_test(NAME ModularAudioRegression COMMAND ModularAudioRegression)
