@@ -194,6 +194,9 @@ private:
 
     EditorBoard editorBoard { *this };
     int maximumEditorWidth = 0;
+    int lastEditorWidth = 0;
+    int preferredEditorWidth = 0;
+    bool fittingEditorToDisplay = false;
     void updateResizeLimits();
     void paintBoard (juce::Graphics&);
     void showFxPage (bool shouldShowFx);
