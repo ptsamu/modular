@@ -55,3 +55,16 @@ target_link_libraries(OneShotSampler
         juce::juce_audio_processors
         OneShotSamplerAssets
 )
+
+option(MODULAR_BUILD_AUDIO_TESTS "Build Modular's audio regression executable" OFF)
+if(MODULAR_BUILD_AUDIO_TESTS)
+    enable_testing()
+    add_executable(ModularAudioRegression "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/audio-regression.cpp")
+    target_include_directories(ModularAudioRegression PRIVATE
+        Source
+        "$<TARGET_PROPERTY:OneShotSampler,INCLUDE_DIRECTORIES>"
+    )
+    target_compile_definitions(ModularAudioRegression PRIVATE "$<TARGET_PROPERTY:OneShotSampler,COMPILE_DEFINITIONS>")
+    target_link_libraries(ModularAudioRegression PRIVATE OneShotSampler)
+    add_test(NAME ModularAudioRegression COMMAND ModularAudioRegression)
+endif()

@@ -90,6 +90,9 @@ public:
     void getStateInformation (juce::MemoryBlock& destData) override;
     void setStateInformation (const void* data, int sizeInBytes) override;
 
+    static const juce::StringArray& masterPresetNames();
+    int getMasterPreset() const;
+    bool applyMasterPreset (int preset);
     bool loadSample (const juce::File& file, int layer = 0);
     void clearSample (int layer, bool forgetPath = true);
     juce::String getMissingSampleName (int layer) const;
@@ -164,6 +167,14 @@ private:
         juce::String name;
         std::vector<float> peaks;
     };
+
+    static std::shared_ptr<SampleData> makeFactorySample (int sampleId);
+    void publishSample (int layer, std::shared_ptr<SampleData> sample);
+    juce::ValueTree initPresetState;
+    std::atomic<unsigned int> masterPresetRevision { 0 };
+    unsigned int playingMasterPresetRevision = 0;
+    int presetTransitionFrames = 0;
+    std::array<float, 2> previousOutput {}, presetTransitionOffset {};
 
     double currentSampleRate = 44100.0;
     struct Voice
