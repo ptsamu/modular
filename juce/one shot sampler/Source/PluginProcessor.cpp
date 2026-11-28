@@ -15,6 +15,7 @@ OneShotSamplerAudioProcessor::OneShotSamplerAudioProcessor()
     // Rack slots are real parameters as well as UI state. This guarantees a
     // DAW restores the rack exactly when an editor window is recreated.
     parameters.state.setProperty ("fxLayoutVersion", 7, nullptr);
+    parameters.state.setProperty ("masterPreset", 0, nullptr);
 
     // The compact EQ macros control the first, fourth and seventh bands of
     // the same seven-band engine used by the detailed EQ editor.  Start those
@@ -48,6 +49,7 @@ OneShotSamplerAudioProcessor::OneShotSamplerAudioProcessor()
             layerFxOn[(size_t) layer][i] = parameters.getRawParameterValue (fxParamId (layer, "layerFxOn" + juce::String ((int) i)));
     }
     refreshEqTypes();
+    initPresetState = parameters.copyState();
     parameters.state.addListener (this);
 }
 
@@ -317,6 +319,10 @@ void OneShotSamplerAudioProcessor::changeProgramName (int, const juce::String&) 
 void OneShotSamplerAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
     currentSampleRate = sampleRate;
+    previousOutput.fill (0.0f);
+    presetTransitionOffset.fill (0.0f);
+    presetTransitionFrames = 0;
+    playingMasterPresetRevision = masterPresetRevision.load();
     protectionReductionDb.store (0.0f, std::memory_order_relaxed);
     retiringOutput = {};
     retiringFrames = {};
@@ -1271,6 +1277,12 @@ void OneShotSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffe
     constexpr float ceiling = 0.9660508f; // -0.3 dBFS, sample peak only.
     constexpr float knee = 0.90f;
     float minimumProtectionGain = 1.0f;
+    const auto revision = masterPresetRevision.load();
+    const bool presetChanged = revision != playingMasterPresetRevision;
+    playingMasterPresetRevision = revision;
+    const auto transitionLength = juce::jmax (1, juce::roundToInt (currentSampleRate * 0.012));
+    if (presetChanged)
+        presetTransitionFrames = transitionLength;
     for (int frame = 0; frame < buffer.getNumSamples(); ++frame)
     {
         const auto master = outputGain.getNextValue();
@@ -1279,9 +1291,17 @@ void OneShotSamplerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffe
         {
             const auto x = buffer.getSample (ch, frame) * master;
             const auto finite = std::isfinite (x) ? x : 0.0f;
-            buffer.setSample (ch, frame, finite);
-            peak = juce::jmax (peak, std::abs (finite));
+            auto& correction = presetTransitionOffset[(size_t) ch];
+            if (presetChanged && frame == 0)
+                correction = previousOutput[(size_t) ch] - finite;
+            const auto blend = (float) presetTransitionFrames / (float) transitionLength;
+            const auto smoothed = finite + correction * blend;
+            previousOutput[(size_t) ch] = smoothed;
+            buffer.setSample (ch, frame, smoothed);
+            peak = juce::jmax (peak, std::abs (smoothed));
         }
+        if (presetTransitionFrames > 0)
+            --presetTransitionFrames;
         if (peak > knee)
         {
             const auto target = knee + (ceiling - knee) * std::tanh ((peak - knee) / (ceiling - knee));
@@ -1416,36 +1436,161 @@ bool OneShotSamplerAudioProcessor::loadSample (const juce::File& file, int layer
     }
     sample->sampleRate = reader->sampleRate;
     sample->name = file.getFileName();
-    const auto frames = sample->audio.getNumSamples();
-    const auto bins = juce::jmin (512, frames);
-    sample->peaks.resize ((size_t) bins);
-    for (int bin = 0; bin < bins; ++bin)
+    parameters.state.removeProperty (layer == 0 ? "factorySampleA" : "factorySampleB", nullptr);
+    parameters.state.setProperty (layer == 0 ? "sampleFilePath" : "sampleFilePathB", file.getFullPathName(), nullptr);
+    publishSample (layer, std::move (sample));
+    return true;
+}
+
+void OneShotSamplerAudioProcessor::publishSample (int layer, std::shared_ptr<SampleData> sample)
+{
+    if (sample != nullptr)
     {
-        const auto first = (int) ((int64_t) frames * bin / bins);
-        const auto last = (int) ((int64_t) frames * (bin + 1) / bins);
-        for (int ch = 0; ch < sample->audio.getNumChannels(); ++ch)
-            sample->peaks[(size_t) bin] = juce::jmax (sample->peaks[(size_t) bin], sample->audio.getMagnitude (ch, first, last - first));
+        const auto frames = sample->audio.getNumSamples();
+        const auto bins = juce::jmin (512, frames);
+        sample->peaks.resize ((size_t) bins);
+        for (int bin = 0; bin < bins; ++bin)
+        {
+            const auto first = (int) ((int64_t) frames * bin / bins);
+            const auto last = (int) ((int64_t) frames * (bin + 1) / bins);
+            for (int ch = 0; ch < sample->audio.getNumChannels(); ++ch)
+                sample->peaks[(size_t) bin] = juce::jmax (sample->peaks[(size_t) bin],
+                                                        sample->audio.getMagnitude (ch, first, last - first));
+        }
     }
 
     if (auto old = std::atomic_exchange (&loadedSamples[(size_t) layer], std::move (sample)))
         retiredSamples.push_back (std::move (old));
     retiredSamples.erase (std::remove_if (retiredSamples.begin(), retiredSamples.end(),
         [] (const auto& old) { return old.use_count() == 1; }), retiredSamples.end());
-    parameters.state.setProperty (layer == 0 ? "sampleFilePath" : "sampleFilePathB", file.getFullPathName(), nullptr);
     ++sampleRevision[(size_t) layer];
-    return true;
 }
 
 void OneShotSamplerAudioProcessor::clearSample (int layer, bool forgetPath)
 {
     if (layer < 0 || layer > 1) return;
     const juce::ScopedLock lock (sampleLoadLock);
-    if (auto old = std::atomic_exchange (&loadedSamples[(size_t) layer], std::shared_ptr<SampleData>()))
-        retiredSamples.push_back (std::move (old));
-    retiredSamples.erase (std::remove_if (retiredSamples.begin(), retiredSamples.end(),
-        [] (const auto& old) { return old.use_count() == 1; }), retiredSamples.end());
-    if (forgetPath) parameters.state.removeProperty (layer == 0 ? "sampleFilePath" : "sampleFilePathB", nullptr);
-    ++sampleRevision[(size_t) layer];
+    if (forgetPath)
+    {
+        parameters.state.removeProperty (layer == 0 ? "sampleFilePath" : "sampleFilePathB", nullptr);
+        parameters.state.removeProperty (layer == 0 ? "factorySampleA" : "factorySampleB", nullptr);
+    }
+    publishSample (layer, {});
+}
+
+const juce::StringArray& OneShotSamplerAudioProcessor::masterPresetNames()
+{
+    static const juce::StringArray names { "Init", "Carbon Kick", "Glass Canopy", "Velvet Wire" };
+    return names;
+}
+
+int OneShotSamplerAudioProcessor::getMasterPreset() const
+{
+    return juce::jlimit (-1, masterPresetNames().size() - 1, (int) parameters.state.getProperty ("masterPreset", -1));
+}
+
+std::shared_ptr<OneShotSamplerAudioProcessor::SampleData> OneShotSamplerAudioProcessor::makeFactorySample (int sampleId)
+{
+    struct Sound
+    {
+        const char* name;
+        double seconds;
+        double fundamental;
+        std::array<double, 4> ratios, amplitudes, decay;
+        double pitchSweep;
+    };
+    // Stable IDs are stored with projects. Keep these entries in order.
+    static constexpr Sound sounds[] {
+        { "Carbon Sub",   0.68,  55.0,  { 1, 2, 3, 4 },          { .82, .13, .05, .02 }, { 9, 16, 21, 28 }, 100 },
+        { "Carbon Tap",   0.20, 180.0,  { 1, 2.8, 6.15, 10.9 },   { .39, .30, .21, .10 }, { 32, 48, 75, 100 }, 35 },
+        { "Glass Bell",   2.10, 261.626,{ 1, 2.01, 3.83, 6.41 },  { .63, .25, .13, .07 }, { 2.9, 3.5, 7, 11 }, 0 },
+        { "Glass Shard",  1.65, 523.251,{ 1, 1.48, 2.62, 4.26 },  { .48, .31, .17, .08 }, { 4.1, 5.3, 8, 16 }, 0 },
+        { "Velvet Body",  1.25, 130.813,{ 1, 2, 3, 4 },          { .66, .24, .14, .06 }, { 4, 6, 8, 13 }, 0 },
+        { "Velvet String",1.05, 261.626,{ 1, 2.004, 3.011, 5.02 },{ .38, .29, .18, .10 }, { 5, 7, 10, 14 }, 0 }
+    };
+    if (sampleId <= 0 || sampleId > (int) std::size (sounds))
+        return {};
+
+    const auto& sound = sounds[sampleId - 1];
+    auto sample = std::make_shared<SampleData>();
+    sample->name = sound.name;
+    const int frames = juce::roundToInt (sound.seconds * sample->sampleRate);
+    sample->audio.setSize (1, frames);
+    auto* samples = sample->audio.getWritePointer (0);
+    for (int frame = 0; frame < frames; ++frame)
+    {
+        const double t = frame / sample->sampleRate;
+        const double cycles = sound.fundamental * t + sound.pitchSweep * (-std::expm1 (-t * 65.0)) / 65.0;
+        double value = 0.0;
+        for (size_t partial = 0; partial < sound.ratios.size(); ++partial)
+            value += sound.amplitudes[partial] * std::exp (-t * sound.decay[partial])
+                   * std::sin (juce::MathConstants<double>::twoPi * cycles * sound.ratios[partial]);
+        const auto fade = juce::jlimit (0.0, 1.0, juce::jmin (t / 0.004, (frames - 1 - frame) / (0.065 * sample->sampleRate)));
+        samples[frame] = (float) (0.68 * value * fade * fade * (3.0 - 2.0 * fade));
+    }
+    return sample;
+}
+
+bool OneShotSamplerAudioProcessor::applyMasterPreset (int preset)
+{
+    if (! juce::isPositiveAndBelow (preset, masterPresetNames().size()))
+        return false;
+
+    auto state = initPresetState.createCopy();
+    state.setProperty ("masterPreset", preset, nullptr);
+    const auto set = [&state] (const juce::String& id, float value)
+    {
+        auto parameter = state.getChildWithProperty ("id", id);
+        jassert (parameter.isValid());
+        if (parameter.isValid()) parameter.setProperty ("value", value, nullptr);
+    };
+    std::array<std::shared_ptr<SampleData>, 2> samples;
+    if (preset != 0)
+    {
+        for (int layer = 0; layer < 2; ++layer)
+        {
+            const auto sampleId = (preset - 1) * 2 + layer + 1;
+            samples[(size_t) layer] = makeFactorySample (sampleId);
+            if (samples[(size_t) layer] == nullptr) return false;
+            state.setProperty (layer == 0 ? "factorySampleA" : "factorySampleB", sampleId, nullptr);
+            set (sourceParamId (layer, "Level"), layer == 0 ? -3.0f : -8.0f);
+            set (envelopeParamId (layer, "attack"), preset == 1 ? 0.002f : 0.007f);
+            set (envelopeParamId (layer, "release"), preset == 1 ? 0.14f : 0.38f);
+        }
+    }
+
+    if (preset == 2)
+    {
+        set ("layerFxOn1", 2);
+        set ("reverbRoomSize", 0.68f);
+        set ("reverbMix", 0.26f);
+        set (fxParamId (1, "layerFxOn1"), 2);
+        set (fxParamId (1, "reverbRoomSize"), 0.76f);
+        set (fxParamId (1, "reverbMix"), 0.32f);
+        set ("outputGain", -2.0f);
+    }
+    else if (preset == 3)
+    {
+        set (fxParamId (1, "layerFxOn2"), 2);
+        set (fxParamId (1, "chorusMix"), 0.18f);
+        set (fxParamId (1, "chorusDepth"), 0.24f);
+        set ("layerFxOn1", 2);
+        set ("reverbRoomSize", 0.26f);
+        set ("reverbMix", 0.14f);
+        set (sourceParamId (1, "Tremolo"), 9.0f);
+    }
+
+    const juce::ScopedLock callback (getCallbackLock());
+    const juce::ScopedLock samplesLock (sampleLoadLock);
+    parameters.replaceState (state);
+    refreshEqTypes();
+    for (int layer = 0; layer < 2; ++layer)
+    {
+        auditionPending[(size_t) layer].store (false);
+        publishSample (layer, std::move (samples[(size_t) layer]));
+    }
+    ++masterPresetRevision;
+    return true;
 }
 
 juce::String OneShotSamplerAudioProcessor::getSampleName (int layer) const
@@ -1555,7 +1700,15 @@ void OneShotSamplerAudioProcessor::setStateInformation (const void* data, int si
             for (int layer = 0; layer < 2; ++layer)
             {
                 const auto path = parameters.state.getProperty (layer == 0 ? "sampleFilePath" : "sampleFilePathB").toString();
-                if (path.isEmpty() || ! loadSample (juce::File (path), layer))
+                const auto factoryId = (int) parameters.state.getProperty (layer == 0 ? "factorySampleA" : "factorySampleB", 0);
+                if (path.isNotEmpty() && loadSample (juce::File (path), layer))
+                    continue;
+                if (auto sample = makeFactorySample (factoryId); path.isEmpty() && sample != nullptr)
+                {
+                    const juce::ScopedLock lock (sampleLoadLock);
+                    publishSample (layer, std::move (sample));
+                }
+                else
                     clearSample (layer, false);
             }
         }

@@ -212,11 +212,62 @@ int main()
         std::unique_ptr<juce::AudioProcessorEditor> editor (restored.createEditor());
         editor->setSize (1440, 680);
         for (const auto* child : editor->getChildren())
-            if (child->isVisible() && ! child->getBounds().isEmpty() && ! editor->getLocalBounds().contains (child->getBounds()))
+            if (child->isVisible() && ! child->getBounds().isEmpty() && ! editor->getLocalBounds().contains (editor->getLocalArea (child, child->getLocalBounds())))
                 return 17;
     }
     if (! restored.getFxSlotEnabled (1) || ! restored.isLayerFxOn (1, 1, true)) return 18;
     std::cout << "Legacy Both and missing sample survive restore; compact editor reopens without changing FX\n";
+    OneShotSamplerAudioProcessor patches;
+    if (patches.getMasterPreset() != 0 || patches.hasLoadedSample (0) || patches.hasLoadedSample (1)) return 19;
+    patches.prepareToPlay (44100, 256);
+    juce::AudioBuffer<float> patchAudio (2, 256);
+    juce::MidiBuffer patchMidi;
+    const auto& patchNames = patches.masterPresetNames();
+    for (int preset = 1; preset < patchNames.size(); ++preset)
+    {
+        if (! patches.applyMasterPreset (preset) || patches.getMasterPreset() != preset
+            || ! patches.hasLoadedSample (0) || ! patches.hasLoadedSample (1)) return 20;
+        float peak = 0.0f;
+        for (int block = 0; block < 48; ++block)
+        {
+            if (block == 0 || block == 26)
+                patchMidi.addEvent (juce::MidiMessage::noteOn (1, 60 + (block == 26 ? 7 : 0), 0.8f), 0);
+            if (block == 20 || block == 43)
+                patchMidi.addEvent (juce::MidiMessage::noteOff (1, 60 + (block == 43 ? 7 : 0)), 0);
+            patches.processBlock (patchAudio, patchMidi);
+            patchMidi.clear();
+            for (int ch = 0; ch < 2; ++ch)
+                for (int i = 0; i < patchAudio.getNumSamples(); ++i)
+                {
+                    const auto value = patchAudio.getSample (ch, i);
+                    if (! std::isfinite (value)) return 21;
+                    peak = juce::jmax (peak, std::abs (value));
+                }
+        }
+        std::cout << patchNames[preset] << " render peak " << peak << '\n';
+        if (peak < 0.02f || peak > 0.966051f) return 22;
+        juce::MemoryBlock bytes;
+        patches.getStateInformation (bytes);
+        OneShotSamplerAudioProcessor recalled;
+        recalled.setStateInformation (bytes.getData(), (int) bytes.getSize());
+        if (recalled.getMasterPreset() != preset
+            || recalled.getSampleName (0) != patches.getSampleName (0)
+            || recalled.getSampleName (1) != patches.getSampleName (1)
+            || recalled.getWaveformPeaks (0) != patches.getWaveformPeaks (0)
+            || recalled.getWaveformPeaks (1) != patches.getWaveformPeaks (1)) return 23;
+    }
+    const auto previous = patchAudio.getSample (0, patchAudio.getNumSamples() - 1);
+    setParam (patches, "duckOn", 1);
+    setParam (patches, "outputGain", -18);
+    if (! patches.applyMasterPreset (0) || patches.hasLoadedSample (0) || patches.hasLoadedSample (1)
+        || patches.parameters.getRawParameterValue ("duckOn")->load() > 0.0f
+        || std::abs (patches.parameters.getRawParameterValue ("outputGain")->load()) > 0.001f) return 24;
+    patches.processBlock (patchAudio, patchMidi);
+    if (std::abs (previous - patchAudio.getSample (0, 0)) > 0.001f) return 25;
+    for (int block = 0; block < 4; ++block)
+        patches.processBlock (patchAudio, patchMidi);
+    if (patchAudio.getMagnitude (0, patchAudio.getNumSamples()) > 0.0001f) return 26;
+    std::cout << "Factory samples recall and Init returns to silence\n";
     std::cout << "One bar dry/sync/note: " << barDry << "/" << barLoop << "/" << barNote << '\n';
     return dry > 0 && ducked >= 0 && ducked < dry * 0.3f && fallback >= 0 && fallback < dry * 0.3f
         && barDry > 0 && barLoop >= 0 && barLoop < barDry * 0.3f && std::abs (barDry - barNote) < 1e-6f

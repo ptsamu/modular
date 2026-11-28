@@ -784,26 +784,9 @@ void EqCurvePad::paint (juce::Graphics& g)
     }
 }
 
-juce::Colour PresetSelector::accentForEffect (int effect)
+namespace
 {
-    // The line design has a single ink colour; modules are told apart by name.
-    juce::ignoreUnused (effect);
-    return modularInk;
-}
-
-juce::String PresetSelector::labelForEffect (int effect)
-{
-    switch (effect)
-    {
-        case 5: return "EQ preset";
-        case 7: return "Granular preset";
-        case 2: return "Chorus preset";
-        case 9: return "Random preset";
-        default: return "Reverb preset";
-    }
-}
-
-juce::String PresetSelector::presetNameFor (int effect, int preset)
+juce::String fxPresetName (int effect, int preset)
 {
     static const std::array<juce::String, 4> eq { "Spectrum", "Low cut", "Warmth", "Air" };
     static const std::array<juce::String, 4> reverb { "Space", "Chamber", "Halo", "Drift" };
@@ -814,284 +797,25 @@ juce::String PresetSelector::presetNameFor (int effect, int preset)
     switch (effect) { case 5: return eq[index]; case 7: return granular[index]; case 2: return chorus[index]; case 9: return random[index]; default: return reverb[index]; }
 }
 
-juce::String PresetSelector::presetIdFor (int effect, int preset)
+class PresetArrow final : public juce::Button
 {
-    juce::String prefix = "verb";
-    switch (effect) { case 5: prefix = "eq"; break; case 7: prefix = "gran"; break; case 2: prefix = "chor"; break; case 9: prefix = "rand"; break; default: break; }
-    return "frwk_" + prefix + "00" + juce::String (juce::jlimit (0, 3, preset) + 1);
-}
-
-juce::String PresetSelector::presetMetaFor (int effect, int preset)
-{
-    static const std::array<juce::String, 4> eq { "7-band neutral curve", "high-pass 95 Hz", "analogue warmth", "high-shelf lift" };
-    static const std::array<juce::String, 4> reverb { "room / 2.4s decay", "chamber / 1.3s decay", "frozen bloom / wide", "hall / 4.2s decay" };
-    static const std::array<juce::String, 4> granular { "185 ms / 5 grains", "95 ms / pitch scatter", "340 ms / cloud mode", "62 ms / dense field" };
-    static const std::array<juce::String, 4> chorus { "subtle dual voice", "wide stereo motion", "slow cassette drift", "deep ensemble motion" };
-    static const std::array<juce::String, 4> random { "controlled variance", "tempo-linked flux", "tilted probability", "slow evolving chance" };
-    const auto index = (size_t) juce::jlimit (0, 3, preset);
-    switch (effect) { case 5: return eq[index]; case 7: return granular[index]; case 2: return chorus[index]; case 9: return random[index]; default: return reverb[index]; }
-}
-
-int PresetSelector::effectForFilterIndex (int index)
-{
-    static constexpr std::array<int, 5> effects { 1, 7, 5, 2, 9 };
-    return effects[(size_t) juce::jlimit (0, 4, index)];
-}
-
-juce::Rectangle<int> PresetSelector::pillBounds() const
-{
-    // The pill leaves room on the right for the previous / next circles.
-    const auto height = closedBounds.getHeight();
-    return getLocalBounds().withHeight (height).withTrimmedRight (2 * height + 20);
-}
-
-juce::Rectangle<int> PresetSelector::stepBounds (int index) const
-{
-    const auto size = closedBounds.getHeight();
-    return { index == 0 ? getWidth() - 2 * size - 10 : getWidth() - size, 0, size, size };
-}
-
-juce::Rectangle<int> PresetSelector::menuBounds() const
-{
-    const auto pill = pillBounds();
-    return { 0, pill.getBottom() + 8, getWidth(), juce::jmax (0, getHeight() - pill.getHeight() - 8) };
-}
-
-juce::Rectangle<int> PresetSelector::filterBounds (int index) const
-{
-    auto row = menuBounds().reduced (14, 12).withHeight (28);
-    const auto gap = 6;
-    const auto width = (row.getWidth() - gap * 4) / 5;
-    row.removeFromLeft ((width + gap) * juce::jlimit (0, 4, index));
-    return row.withWidth (width);
-}
-
-juce::Rectangle<int> PresetSelector::presetRowBounds (int index) const
-{
-    auto list = menuBounds().reduced (14, 12).withTrimmedTop (42);
-    constexpr int rowHeight = 39;
-    return list.withTrimmedTop (juce::jlimit (0, 3, index) * (rowHeight + 3)).withHeight (rowHeight);
-}
-
-void PresetSelector::updateBounds()
-{
-    if (closedBounds.isEmpty())
-        return;
-    // 44 px header + 8 px separation + 234 px menu: enough vertical room for
-    // the filter row, four complete preset rows, and the bottom inset.
-    setBounds (closedBounds.withHeight (isOpen_ ? 286 : closedBounds.getHeight()));
-    if (isOpen_)
-        toFront (false);
-}
-
-void PresetSelector::setLayoutBounds (juce::Rectangle<int> bounds)
-{
-    closedBounds = bounds;
-    updateBounds();
-}
-
-void PresetSelector::setModule (int effect, int preset)
-{
-    if (effect != 1 && effect != 2 && effect != 5 && effect != 7 && effect != 9)
-        effect = 1;
-    activeEffect = effect;
-    if (! isOpen_)
-        filteredEffect = effect;
-    selectedPreset = juce::jlimit (0, 3, preset);
-    repaint();
-}
-
-void PresetSelector::setOpen (bool shouldOpen)
-{
-    if (isOpen_ == shouldOpen)
-        return;
-    isOpen_ = shouldOpen;
-    if (isOpen_)
+public:
+    PresetArrow() : juce::Button ("Choose effect preset") {}
+    void paintButton (juce::Graphics& g, bool over, bool down) override
     {
-        filteredEffect = activeEffect;
-        if (isShowing()) grabKeyboardFocus();
-    }
-    updateBounds();
-    repaint();
-}
-
-void PresetSelector::paint (juce::Graphics& g)
-{
-    // Helvetica is deliberately larger and rasterizes cleanly in FL Studio's
-    // embedded plugin window at the fixed Beta 2 resolution.
-    const auto menuFont = juce::String ("Helvetica");
-    const auto ink = modularInk;
-    const auto blue = modularBlue;
-    const auto pill = pillBounds().toFloat();
-
-    // One rounded pill: module context, preset name and id, counter, chevron.
-    g.setColour (ink);
-    g.drawRoundedRectangle (pill.reduced (0.5f), pill.getHeight() * 0.5f, 1.0f);
-    const auto left = (int) pill.getX() + 28;
-    g.setFont (juce::Font (menuFont, 11.0f, juce::Font::plain));
-    g.drawText (labelForEffect (activeEffect), left, (int) pill.getY(), 130, (int) pill.getHeight(), juce::Justification::centredLeft);
-    g.setFont (juce::Font (menuFont, 18.0f, juce::Font::bold));
-    g.drawText (presetNameFor (activeEffect, selectedPreset), left + 140, (int) pill.getY(), 120, (int) pill.getHeight(), juce::Justification::centredLeft);
-    g.setFont (juce::Font (menuFont, 11.0f, juce::Font::plain));
-    g.drawText (presetIdFor (activeEffect, selectedPreset), left + 270, (int) pill.getY(), 160, (int) pill.getHeight(), juce::Justification::centredLeft);
-
-    const auto circleSize = pill.getHeight() - 12.0f;
-    const auto circle = juce::Rectangle<float> (pill.getRight() - circleSize - 6.0f, pill.getY() + 6.0f, circleSize, circleSize);
-    g.drawText ("0" + juce::String (selectedPreset + 1) + " / 04", (int) circle.getX() - 96, (int) pill.getY(), 84, (int) pill.getHeight(), juce::Justification::centredRight);
-    g.drawEllipse (circle.reduced (0.5f), 1.0f);
-    // Draw the disclosure marker ourselves so it stays crisp in every font.
-    const auto chevronCentre = circle.getCentre();
-    juce::Path chevron;
-    const auto lift = isOpen_ ? 1.0f : -1.0f;
-    chevron.startNewSubPath (chevronCentre.x - 5.0f, chevronCentre.y + lift * 2.5f);
-    chevron.lineTo (chevronCentre.x, chevronCentre.y - lift * 2.5f);
-    chevron.lineTo (chevronCentre.x + 5.0f, chevronCentre.y + lift * 2.5f);
-    g.strokePath (chevron, juce::PathStrokeType (1.2f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-
-    // Previous / next preset circles.
-    for (int step = 0; step < 2; ++step)
-    {
-        const auto stepArea = stepBounds (step).toFloat();
-        const auto centre = stepArea.getCentre();
-        const auto direction = step == 0 ? -1.0f : 1.0f;
-        g.drawEllipse (stepArea.reduced (0.5f), 1.0f);
+        const auto bounds = getLocalBounds().toFloat().reduced (0.5f);
+        g.setColour (modularInk.withAlpha (down ? 0.75f : over ? 0.90f : 1.0f));
+        g.fillRoundedRectangle (bounds, 4.0f);
+        const auto centre = bounds.getCentre();
         juce::Path arrow;
-        arrow.startNewSubPath (centre.x - direction * 2.5f, centre.y - 5.0f);
-        arrow.lineTo (centre.x + direction * 2.5f, centre.y);
-        arrow.lineTo (centre.x - direction * 2.5f, centre.y + 5.0f);
-        g.strokePath (arrow, juce::PathStrokeType (1.2f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+        arrow.startNewSubPath (centre.x - 4.0f, centre.y - 2.0f);
+        arrow.lineTo (centre.x, centre.y + 2.0f);
+        arrow.lineTo (centre.x + 4.0f, centre.y - 2.0f);
+        g.setColour (modularBlue);
+        g.strokePath (arrow, juce::PathStrokeType (1.5f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
     }
+};
 
-    if (! isOpen_)
-        return;
-
-    const auto menu = menuBounds().toFloat();
-    g.setColour (blue); g.fillRect (menu);
-    g.setColour (ink); g.drawRoundedRectangle (menu.reduced (0.5f), 14.0f, 1.0f);
-
-    for (int index = 0; index < 5; ++index)
-    {
-        const auto effect = effectForFilterIndex (index);
-        const auto chip = filterBounds (index).toFloat();
-        const auto selected = effect == filteredEffect;
-        if (selected)
-        {
-            g.setColour (ink);
-            g.fillRoundedRectangle (chip, chip.getHeight() * 0.5f);
-        }
-        else
-        {
-            g.setColour (ink);
-            g.drawRoundedRectangle (chip.reduced (0.5f), chip.getHeight() * 0.5f, 1.0f);
-        }
-        g.setColour (selected ? blue : ink); g.setFont (juce::Font (menuFont, 10.5f, juce::Font::bold));
-        g.drawFittedText (labelForEffect (effect).replace (" preset", ""), (int) chip.getX() + 6, (int) chip.getY(), (int) chip.getWidth() - 12, (int) chip.getHeight(), juce::Justification::centred, 1);
-    }
-
-    for (int index = 0; index < 4; ++index)
-    {
-        const auto row = presetRowBounds (index).toFloat();
-        const auto selected = index == (readPresetForEffect ? readPresetForEffect (filteredEffect) : selectedPreset);
-        const auto hovered = index == hoveredPreset;
-        if (hovered)
-        {
-            g.setColour (ink.withAlpha (0.12f));
-            g.fillRoundedRectangle (row, 8.0f);
-        }
-        g.setColour (ink.withAlpha (selected ? 1.0f : 0.55f));
-        g.drawRoundedRectangle (row.reduced (0.5f), 8.0f, selected ? 1.6f : 1.0f);
-        g.setColour (ink); g.setFont (juce::Font (menuFont, 12.5f, juce::Font::bold));
-        g.drawText (presetNameFor (filteredEffect, index), (int) row.getX() + 16, (int) row.getY() + 4, 140, 16, juce::Justification::centredLeft);
-        g.setFont (juce::Font (menuFont, 10.5f, juce::Font::plain));
-        g.drawFittedText (presetMetaFor (filteredEffect, index) + " / " + presetIdFor (filteredEffect, index), (int) row.getX() + 16, (int) row.getY() + 20, (int) row.getWidth() - 56, 14, juce::Justification::centredLeft, 1);
-        if (selected)
-        {
-            const auto checkCentre = juce::Point<float> (row.getRight() - 21.0f, row.getCentreY());
-            juce::Path check;
-            check.startNewSubPath (checkCentre.x - 5.0f, checkCentre.y);
-            check.lineTo (checkCentre.x - 1.2f, checkCentre.y + 4.0f);
-            check.lineTo (checkCentre.x + 6.0f, checkCentre.y - 5.0f);
-            g.strokePath (check, juce::PathStrokeType (1.4f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-        }
-    }
-}
-
-void PresetSelector::mouseDown (const juce::MouseEvent& event)
-{
-    const auto point = event.getPosition();
-    if (pillBounds().contains (point))
-    {
-        setOpen (! isOpen_);
-        return;
-    }
-
-    // Previous / next circles step through the four presets of the active module.
-    for (int step = 0; step < 2; ++step)
-        if (stepBounds (step).contains (point))
-        {
-            selectedPreset = (selectedPreset + (step == 0 ? 3 : 1)) % 4;
-            if (onPresetSelected) onPresetSelected (activeEffect, selectedPreset);
-            repaint();
-            return;
-        }
-
-    if (! isOpen_ || ! menuBounds().contains (point))
-        return;
-
-    for (int index = 0; index < 5; ++index)
-        if (filterBounds (index).contains (point))
-        {
-            filteredEffect = effectForFilterIndex (index);
-            repaint();
-            return;
-        }
-
-    for (int index = 0; index < 4; ++index)
-        if (presetRowBounds (index).contains (point))
-        {
-            activeEffect = filteredEffect;
-            selectedPreset = index;
-            if (onPresetSelected) onPresetSelected (activeEffect, selectedPreset);
-            setOpen (false);
-            return;
-        }
-
-    setOpen (false);
-}
-
-bool PresetSelector::keyPressed (const juce::KeyPress& key)
-{
-    if (! isOpen_ || key != juce::KeyPress::escapeKey) return false;
-    setOpen (false);
-    return true;
-}
-
-void PresetSelector::mouseMove (const juce::MouseEvent& event)
-{
-    int nextHovered = -1;
-    if (isOpen_)
-        for (int index = 0; index < 4; ++index)
-            if (presetRowBounds (index).contains (event.getPosition()))
-                nextHovered = index;
-
-    if (nextHovered != hoveredPreset)
-    {
-        hoveredPreset = nextHovered;
-        repaint();
-    }
-}
-
-void PresetSelector::mouseExit (const juce::MouseEvent&)
-{
-    if (hoveredPreset != -1)
-    {
-        hoveredPreset = -1;
-        repaint();
-    }
-}
-
-namespace
-{
 class BlueButton final : public juce::Button
 {
 public:
@@ -1129,11 +853,14 @@ public:
             });
         route->sendInitialUpdate();
         addAndMakeVisible (power);
+        addAndMakeVisible (presetArrow);
         power.onClick = std::move (toggle);
         setInterceptsMouseClicks (false, true);
     }
 
     std::function<void()> onRouteChanged, beforeRouteChanged;
+    PresetArrow presetArrow;
+    int presetButtonX = 72;
 
     void setEffectOn (bool on)
     {
@@ -1155,6 +882,7 @@ public:
     void resized() override
     {
         power.setBounds (getWidth() - 50, 14, 35, 21);
+        presetArrow.setBounds (presetButtonX, 14, 21, 21);
         auto area = juce::Rectangle<int> (getWidth() - 71, getHeight() - 30, 57, 20);
         buttons[0].setBounds (area.removeFromLeft (27));
         area.removeFromLeft (3);
@@ -1583,6 +1311,10 @@ OneShotSamplerAudioProcessorEditor::OneShotSamplerAudioProcessorEditor (OneShotS
             sourceRoutes[i]->setEffectOn (isEffectEnabled (effect));
         });
         editorBoard.addAndMakeVisible (*sourceRoutes[i]);
+        constexpr std::array<int, 5> arrowPositions { 71, 87, 70, 69, 42 };
+        auto& route = *sourceRoutes[i];
+        route.presetButtonX = arrowPositions[i];
+        route.presetArrow.onClick = [this, i] { showCardPresets (cardEffects[i], sourceRoutes[i]->presetArrow); };
         sourceRoutes[i]->beforeRouteChanged = [this, i]
         {
             const auto effect = cardEffects[i];
@@ -1700,7 +1432,6 @@ OneShotSamplerAudioProcessorEditor::OneShotSamplerAudioProcessorEditor (OneShotS
     eqPreset.onChange = [this]
     {
         const auto set = [this] (const juce::String& id, float value) { if (auto* p = audioProcessor.parameters.getParameter (id)) p->setValueNotifyingHost (p->convertTo0to1 (value)); };
-        set ("eqEnabled", 1.0f);
         const std::array<float, 7> frequencies { 55, 140, 380, 1050, 2700, 6800, 14500 };
         const std::array<float, 7> warmth { 1.8f, 1.1f, 0.4f, -0.7f, -1.1f, 0.3f, 1.3f };
         const std::array<float, 7> air { -1.5f, -0.8f, -0.2f, 0.4f, 1.2f, 2.6f, 3.8f };
@@ -1725,26 +1456,12 @@ OneShotSamplerAudioProcessorEditor::OneShotSamplerAudioProcessorEditor (OneShotS
     harmonyPreset.onChange = [setParameter, this] { const float v[][3] { { -5, 5, .18f }, { 2, 11, .24f }, { 8, 17, .30f }, { 12, 28, .36f } }; const auto& p = v[juce::jlimit (0, 3, harmonyPreset.getSelectedId() - 1)]; setParameter ("harmonyShift", p[0]); setParameter ("harmonyDetune", p[1]); setParameter ("harmonyMix", p[2]); };
     randomPreset.onChange = [setParameter, this] { const float v[][3] { { .12f, 2, .12f }, { .30f, 5, .20f }, { .55f, 9, .28f }, { .82f, 15, .34f } }; const auto& p = v[juce::jlimit (0, 3, randomPreset.getSelectedId() - 1)]; setParameter ("randomAmount", p[0]); setParameter ("randomRate", p[1]); setParameter ("randomMix", p[2]); };
 
-    presetSelector.setWantsKeyboardFocus (true);
-    presetSelector.readPresetForEffect = [this] (int effect)
-    {
-        return (int) audioProcessor.parameters.state.getProperty (presetBankKey (effect), 0);
-    };
-    presetSelector.onPresetSelected = [this] (int effect, int preset)
-    {
-        juce::ComboBox* source = effect == 5 ? &eqPreset
-                                : effect == 7 ? &granularPreset
-                                : effect == 2 ? &chorusPreset
-                                : effect == 9 ? &randomPreset : &reverbPreset;
-        audioProcessor.parameters.state.setProperty (presetBankKey (effect), preset, nullptr);
-        source->setSelectedId (preset + 1, juce::dontSendNotification);
-        if (source->onChange) source->onChange();
-        selectEffect (effect);
-    };
     for (auto& route : sourceRoutes)
         route->onRouteChanged = [this] { syncFxBanks(); };
-    presetSelector.setAlwaysOnTop (true);
-    editorBoard.addAndMakeVisible (presetSelector);
+    masterPresetButton = std::make_unique<BlueButton> ("Master presets");
+    masterPresetButton->onClick = [this] { showMasterPresets(); };
+    editorBoard.addAndMakeVisible (*masterPresetButton);
+    refreshMasterPresetLabel();
 
     for (auto* slot : { &fxSlotOne, &fxSlotTwo, &fxSlotThree, &fxSlotFour, &fxSlotFive, &fxSlotSix, &fxSlotSeven })
     {
@@ -1881,16 +1598,10 @@ void OneShotSamplerAudioProcessorEditor::mouseDown (const juce::MouseEvent& even
 {
     const auto clicked = event.getEventRelativeTo (&editorBoard).getPosition();
 
-    // The selector is a self-contained popup. A click anywhere outside its
-    // bounds closes it before the board handles the same click normally.
-    if (presetSelector.isOpen() && ! presetSelector.getBounds().contains (clicked))
-        presetSelector.setOpen (false);
-
     // This editor also hears child events. Let controls keep their normal
     // behaviour, but treat every unoccupied card surface as a card click.
     for (auto* component = event.originalComponent; component != nullptr; component = component->getParentComponent())
-        if (dynamic_cast<PresetSelector*> (component) != nullptr
-            || dynamic_cast<juce::Slider*> (component) != nullptr
+        if (dynamic_cast<juce::Slider*> (component) != nullptr
             || dynamic_cast<juce::ComboBox*> (component) != nullptr
             || dynamic_cast<juce::Button*> (component) != nullptr)
             return;
@@ -2003,7 +1714,6 @@ void OneShotSamplerAudioProcessorEditor::paintBoard (juce::Graphics& g)
     drawPanel (beta2OutputBounds);
 
     // Header: the official wordmark on the left, two pills for the live state.
-    // The preset pill and its circles are drawn by the PresetSelector itself.
     g.setImageResamplingQuality (juce::Graphics::highResamplingQuality);
     if (modularWordmark.isValid())
     {
@@ -2894,34 +2604,8 @@ void OneShotSamplerAudioProcessorEditor::resized()
         cardHitTargets[i]->setVisible (true);
         cardHitTargets[i]->toBack();
     }
-    // The header field owns its full pill and menu surface. The old ComboBoxes
-    // remain state carriers only; they are never drawn in the Beta 2 board.
-    const auto showHeaderPreset = [this] (int effect, juce::ComboBox&)
-    {
-        presetSelector.setVisible (true);
-        presetSelector.setLayoutBounds (beta2PresetBounds);
-        presetSelector.setModule (effect, (int) audioProcessor.parameters.state.getProperty (presetBankKey (effect), 0));
-    };
-    if (selectedFx == 5)
-    {
-        showHeaderPreset (5, eqPreset);
-    }
-    else if (selectedFx == 7)
-    {
-        showHeaderPreset (7, granularPreset);
-    }
-    else if (selectedFx == 9)
-    {
-        showHeaderPreset (9, randomPreset);
-    }
-    else if (selectedFx == 2)
-    {
-        showHeaderPreset (2, chorusPreset);
-    }
-    else
-    {
-        showHeaderPreset (1, reverbPreset);
-    }
+    if (masterPresetButton != nullptr)
+        masterPresetButton->setBounds (beta2PresetBounds);
 
     polishKnobs();
     layoutLiveViews();
@@ -3043,7 +2727,17 @@ void OneShotSamplerAudioProcessorEditor::timerCallback()
         return;
 
     if (meterTick % 30 == 0)
+    {
         updateResizeLimits();
+        refreshMasterPresetLabel();
+        for (size_t i = 0; i < sourceRoutes.size(); ++i)
+        {
+            const auto effect = cardEffects[i];
+            const auto preset = (int) audioProcessor.parameters.state.getProperty (presetBankKey (effect), -1);
+            sourceRoutes[i]->presetArrow.setTooltip (preset < 0 ? juce::String ("Choose effect preset")
+                                                               : fxPresetName (effect, preset));
+        }
+    }
 
     const auto now = juce::Time::getMillisecondCounterHiRes() * 0.001;
     const auto dt = lastVisualTime > 0.0 ? juce::jlimit (0.0, 0.1, now - lastVisualTime) : 0.0;
@@ -3094,6 +2788,60 @@ void OneShotSamplerAudioProcessorEditor::timerCallback()
             cardViews[i].repaint();
         }
     }
+}
+
+void OneShotSamplerAudioProcessorEditor::refreshMasterPresetLabel()
+{
+    const auto index = audioProcessor.getMasterPreset();
+    const auto& names = audioProcessor.masterPresetNames();
+    masterPresetButton->setButtonText (index >= 0 ? "Master presets   /   " + names[index] + "   ▾"
+                                                  : juce::String ("Master presets   ▾"));
+}
+
+void OneShotSamplerAudioProcessorEditor::showMasterPresets()
+{
+    juce::PopupMenu menu;
+    menu.setLookAndFeel (&frameworksLookAndFeel);
+    const auto& names = audioProcessor.masterPresetNames();
+    for (int i = 0; i < names.size(); ++i)
+        menu.addItem (i + 1, names[i], true, i == audioProcessor.getMasterPreset());
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (masterPresetButton.get()),
+        [editor = juce::Component::SafePointer<OneShotSamplerAudioProcessorEditor> (this)] (int result)
+        {
+            if (editor == nullptr || result == 0 || ! editor->audioProcessor.applyMasterPreset (result - 1))
+                return;
+            editor->refreshMasterPresetLabel();
+            editor->syncFxBanks();
+            for (int slot = 0; slot < (int) editor->fxChain.size(); ++slot)
+            {
+                editor->fxChain[(size_t) slot] = editor->audioProcessor.getFxSlotEffect (slot);
+                editor->fxSlotEnabled[(size_t) slot] = editor->audioProcessor.getFxSlotEnabled (slot);
+            }
+            editor->resized();
+            editor->repaint();
+        });
+}
+
+void OneShotSamplerAudioProcessorEditor::showCardPresets (int effect, juce::Button& target)
+{
+    juce::PopupMenu menu;
+    menu.setLookAndFeel (&frameworksLookAndFeel);
+    const auto selected = (int) audioProcessor.parameters.state.getProperty (presetBankKey (effect), -1);
+    for (int preset = 0; preset < 4; ++preset)
+        menu.addItem (preset + 1, fxPresetName (effect, preset), true, preset == selected);
+
+    const auto layer = audioProcessor.getEffectLayer (effect);
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&target),
+        [editor = juce::Component::SafePointer<OneShotSamplerAudioProcessorEditor> (this), effect, layer] (int result)
+        {
+            if (editor == nullptr || result == 0 || editor->audioProcessor.getEffectLayer (effect) != layer)
+                return;
+            auto& box = effect == 5 ? editor->eqPreset : effect == 7 ? editor->granularPreset
+                        : effect == 2 ? editor->chorusPreset : effect == 9 ? editor->randomPreset : editor->reverbPreset;
+            editor->audioProcessor.parameters.state.setProperty (editor->presetBankKey (effect), result - 1, nullptr);
+            box.setSelectedId (result, juce::dontSendNotification);
+            if (box.onChange) box.onChange();
+        });
 }
 
 juce::String OneShotSamplerAudioProcessorEditor::presetBankKey (int effect) const
@@ -3162,8 +2910,6 @@ void OneShotSamplerAudioProcessorEditor::syncFxBanks()
     if (changed[9]) bind (9, randomRateAttachment, randomRateSlider, "randomRate");
     if (changed[9]) bind (9, randomMixAttachment, randomMixSlider, "randomMix");
     if (changed[5]) eqCurvePad.repaint();
-    if (juce::isPositiveAndBelow (selectedFx, (int) changed.size()) && changed[(size_t) selectedFx])
-        presetSelector.setModule (selectedFx, (int) audioProcessor.parameters.state.getProperty (presetBankKey (selectedFx), 0));
 }
 
 void OneShotSamplerAudioProcessorEditor::setEnvelopeLayer (int layer)

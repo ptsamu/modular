@@ -104,46 +104,6 @@ private:
 // The Beta 2 header uses one custom selector instead of JUCE's generic
 // ComboBox. It keeps the active module's preset context visible without an
 // operating-system-style black menu breaking the processing-board language.
-class PresetSelector final : public juce::Component
-{
-public:
-    void setLayoutBounds (juce::Rectangle<int> bounds);
-    void setModule (int effect, int selectedPreset);
-    void setOpen (bool shouldOpen);
-    bool isOpen() const noexcept { return isOpen_; }
-    void paint (juce::Graphics&) override;
-    void mouseDown (const juce::MouseEvent&) override;
-    void mouseMove (const juce::MouseEvent&) override;
-    void mouseExit (const juce::MouseEvent&) override;
-    bool keyPressed (const juce::KeyPress&) override;
-
-    std::function<int (int)> readPresetForEffect;
-    std::function<void (int, int)> onPresetSelected;
-
-private:
-    static juce::Colour accentForEffect (int effect);
-    static juce::String labelForEffect (int effect);
-    static juce::String presetNameFor (int effect, int preset);
-    static juce::String presetIdFor (int effect, int preset);
-    static juce::String presetMetaFor (int effect, int preset);
-    static int effectForFilterIndex (int index);
-    juce::Rectangle<int> pillBounds() const;
-    juce::Rectangle<int> stepBounds (int index) const;
-    juce::Rectangle<int> menuBounds() const;
-    juce::Rectangle<int> filterBounds (int index) const;
-    juce::Rectangle<int> presetRowBounds (int index) const;
-    void updateBounds();
-
-    juce::Rectangle<int> closedBounds;
-    int activeEffect = 1;
-    int filteredEffect = 1;
-    int selectedPreset = 0;
-    int hoveredPreset = -1;
-    bool isOpen_ = false;
-};
-
-// A hands-on macro surface for Beta 2. It is deliberately independent from
-// the audio graph: the editor maps its X/Y position to safe parameter ranges.
 class SourceDeck;
 class SourceRoute;
 
@@ -270,7 +230,10 @@ private:
     std::array<std::unique_ptr<juce::Button>, 2> envelopeTabs;
     void setEnvelopeLayer (int layer);
     EqCurvePad eqCurvePad;
-    PresetSelector presetSelector;
+    std::unique_ptr<juce::Button> masterPresetButton;
+    void refreshMasterPresetLabel();
+    void showMasterPresets();
+    void showCardPresets (int effect, juce::Button& target);
     std::array<std::unique_ptr<SourceDeck>, 2> sourceDecks;
     std::array<std::unique_ptr<SourceRoute>, 5> sourceRoutes;
     juce::Slider outputGainSlider;
