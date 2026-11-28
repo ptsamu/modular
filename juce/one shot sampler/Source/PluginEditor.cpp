@@ -8,6 +8,16 @@ namespace
     constexpr int boardHeight = 720;
     constexpr double boardAspect = (double) boardWidth / boardHeight;
 
+    juce::PropertiesFile::Options editorSettingsOptions()
+    {
+        juce::PropertiesFile::Options options;
+        options.applicationName = "Modular V00";
+        options.filenameSuffix = "settings";
+        options.osxLibrarySubFolder = "Application Support";
+        options.millisecondsBeforeSaving = -1;
+        return options;
+    }
+
     constexpr int cardEffects[5] = { 1, 7, 9, 2, 5 };
     // Every knob caption in the plugin uses this one font.
     juce::Font knobCaptionFont()
@@ -1845,8 +1855,12 @@ OneShotSamplerAudioProcessorEditor::OneShotSamplerAudioProcessorEditor (OneShotS
     updateResizeLimits();
     // Open compactly so the host workspace stays visible. The corner grip
     // still lets the user grow the board up to the display's fit limit.
-    const auto initialWidth = juce::jmin (1150, juce::roundToInt (maximumEditorWidth * 0.9));
-    setSize (initialWidth, juce::roundToInt (initialWidth / boardAspect));
+    const juce::PropertiesFile settings (editorSettingsOptions());
+    const auto defaultWidth = juce::jmin (1150, juce::roundToInt (maximumEditorWidth * 0.9));
+    const auto savedWidth = settings.getIntValue ("editorWidth", defaultWidth);
+    const auto initialWidth = juce::jlimit (getConstrainer()->getMinimumWidth(), maximumEditorWidth,
+                                          savedWidth > 0 ? savedWidth : defaultWidth);
+    setSize (initialWidth, juce::jmax (1, juce::roundToInt (initialWidth / boardAspect)));
     polishKnobs();
     startTimerHz (60);
 }
@@ -1854,6 +1868,11 @@ OneShotSamplerAudioProcessorEditor::OneShotSamplerAudioProcessorEditor (OneShotS
 OneShotSamplerAudioProcessorEditor::~OneShotSamplerAudioProcessorEditor()
 {
     stopTimer();
+    if (preferredEditorWidth > 0)
+    {
+        juce::PropertiesFile settings (editorSettingsOptions());
+        settings.setValue ("editorWidth", preferredEditorWidth);
+    }
     duckDepth.setLookAndFeel (nullptr);
     removeMouseListener (this);
 }
@@ -1937,6 +1956,7 @@ void OneShotSamplerAudioProcessorEditor::updateResizeLimits()
     if (maxWidth == maximumEditorWidth)
         return;
 
+    const juce::ScopedValueSetter<bool> fittingDisplay (fittingEditorToDisplay, true);
     maximumEditorWidth = maxWidth;
     const auto minWidth = juce::jmin (boardWidth / 2, maxWidth / 2);
     setResizeLimits (minWidth, juce::jmax (1, juce::roundToInt (minWidth / boardAspect)),
@@ -2680,6 +2700,11 @@ void OneShotSamplerAudioProcessorEditor::setupLiveViews()
 
 void OneShotSamplerAudioProcessorEditor::resized()
 {
+    const auto width = getWidth();
+    if (width != lastEditorWidth && width > 0 && ! fittingEditorToDisplay && getPeer() != nullptr)
+        preferredEditorWidth = width;
+    lastEditorWidth = width;
+
     // Scale drawing, controls and hit areas together in JUCE's logical coordinates.
     const auto scale = juce::jmin ((float) getWidth() / boardWidth, (float) getHeight() / boardHeight);
     if (scale <= 0.0f)
